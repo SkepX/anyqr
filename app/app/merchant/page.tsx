@@ -18,6 +18,41 @@ const FAIR_RATE_INR_PER_USDC = 97.65; // "fair" reference rate
 // card on the merchant page.
 const AUTO_COMPLETE_ATTEMPTED = new Set<string>();
 
+// Cross-lambda meta cache. Vercel's file-based registry doesn't
+// propagate across lambda instances, so a poll that hits a "cold"
+// lambda gets meta=null for orders another lambda placed. We remember
+// the last non-null meta per orderId in-tab so paymentAddress /
+// payeeName / txHash pills don't blink when polls bounce.
+type MetaFields = Pick<
+  WireOrder,
+  | "paymentAddress"
+  | "payeeName"
+  | "buyerConfirmed"
+  | "merchantPaid"
+  | "placeTxHash"
+  | "acceptTxHash"
+  | "buyerConfirmedTxHash"
+  | "completeTxHash"
+>;
+const META_CACHE = new Map<string, MetaFields>();
+function mergeMeta(o: WireOrder): WireOrder {
+  const cached = META_CACHE.get(o.orderId);
+  // Fold non-null fields from this response into the cache, and fill
+  // any null fields on the response with cached values.
+  const next: MetaFields = {
+    paymentAddress: o.paymentAddress ?? cached?.paymentAddress ?? null,
+    payeeName: o.payeeName ?? cached?.payeeName ?? null,
+    buyerConfirmed: o.buyerConfirmed ?? cached?.buyerConfirmed ?? null,
+    merchantPaid: o.merchantPaid ?? cached?.merchantPaid ?? null,
+    placeTxHash: o.placeTxHash ?? cached?.placeTxHash ?? null,
+    acceptTxHash: o.acceptTxHash ?? cached?.acceptTxHash ?? null,
+    buyerConfirmedTxHash: o.buyerConfirmedTxHash ?? cached?.buyerConfirmedTxHash ?? null,
+    completeTxHash: o.completeTxHash ?? cached?.completeTxHash ?? null,
+  };
+  META_CACHE.set(o.orderId, next);
+  return { ...o, ...next };
+}
+
 export default function MerchantPage() {
   return (
     <RoleGuard expects="merchant" connectPrompt={<MerchantOnboarding />}>
@@ -130,10 +165,10 @@ function MerchantInner() {
         return;
       }
       const j = (await res.json()) as { orders: WireOrder[] };
-      next = j.orders;
+      next = j.orders.map(mergeMeta);
       console.log(
         `[merchant] load done in ${Math.round(performance.now() - t0)}ms — ${next.length} orders`,
-        next.map((o) => `${o.orderId.slice(0, 6)}:${o.status}`),
+        next.map((o) => `${o.orderId.slice(0, 6)}:${o.status}${o.paymentAddress ? "+meta" : ""}`),
       );
     } catch (e) {
       console.warn(`[merchant] load threw`, e);
