@@ -1,20 +1,20 @@
 export interface Country {
   code: string; // ISO ccy
   name: string;
-  flag: string; // emoji fallback until we ship SVGs
+  flag: string;
   symbol: string;
-  live?: boolean; // false = coming soon
+  rail?: string; // e.g. "UPI", "PIX"
+  live?: boolean;
 }
 
 export const COUNTRIES: Country[] = [
-  { code: "INR", name: "India", flag: "🇮🇳", symbol: "₹", live: true },
-  { code: "IDR", name: "Indonesia", flag: "🇮🇩", symbol: "Rp" },
-  { code: "BRL", name: "Brazil", flag: "🇧🇷", symbol: "R$" },
-  { code: "ARS", name: "Argentina", flag: "🇦🇷", symbol: "$" },
-  { code: "VES", name: "Venezuela", flag: "🇻🇪", symbol: "Bs" },
-  { code: "NGN", name: "Nigeria", flag: "🇳🇬", symbol: "₦" },
-  { code: "COP", name: "Colombia", flag: "🇨🇴", symbol: "$" },
-  { code: "USD-EC", name: "Ecuador", flag: "🇪🇨", symbol: "$" },
-  { code: "PEN", name: "Peru", flag: "🇵🇪", symbol: "S/" },
-  { code: "PHP", name: "Philippines", flag: "🇵🇭", symbol: "₱" },
+  { code: "INR", name: "India", flag: "🇮🇳", symbol: "₹", rail: "UPI", live: true },
+  { code: "IDR", name: "Indonesia", flag: "🇮🇩", symbol: "Rp", rail: "QRIS" },
+  { code: "BRL", name: "Brazil", flag: "🇧🇷", symbol: "R$", rail: "PIX" },
+  { code: "VND", name: "Vietnam", flag: "🇻🇳", symbol: "₫", rail: "VietQR" },
+  { code: "PHP", name: "Philippines", flag: "🇵🇭", symbol: "₱", rail: "QR Ph" },
+  { code: "ARS", name: "Argentina", flag: "🇦🇷", symbol: "$", rail: "MercadoPago" },
+  { code: "COP", name: "Colombia", flag: "🇨🇴", symbol: "$", rail: "Nequi" },
+  { code: "USD-EC", name: "Ecuador", flag: "🇪🇨", symbol: "$", rail: "DeUna" },
+  { code: "PEN", name: "Peru", flag: "🇵🇪", symbol: "S/", rail: "Yape" },
 ];

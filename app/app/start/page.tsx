@@ -45,6 +45,7 @@ export default function StartPage() {
                       }`}
                     >
                       {c.symbol} · {c.code}
+                      {c.rail && ` · ${c.rail}`}
                       {!c.live && " · soon"}
                     </span>
                   </span>
