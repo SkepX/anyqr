@@ -160,7 +160,7 @@ function PayInner() {
       const runOnce = async (api: Cip30Api): Promise<string> => {
         const { placeOrder } = await import("@qrpay/sdk");
         const client = await buildClient(api);
-        const r = await placeOrder(client).execute({
+        const prepared = await placeOrder(client).prepare({
           orderId: newOrderId,
           usdcAmount: usdcUnits,
           fiatAmount: BigInt(fiatUnits),
@@ -168,14 +168,14 @@ function PayInner() {
           acceptWindowMin: 10,
           completeWindowMin: 30,
         });
-        if (r.isErr()) {
+        if (prepared.isErr()) {
           // Rethrow the SdkError itself when the wallet channel died so
           // the retry below can recognize it (JSON.stringify drops the
           // non-enumerable Error message).
-          if (isDeadChannelError(r.error)) throw r.error;
-          throw new Error(JSON.stringify(r.error));
+          if (isDeadChannelError(prepared.error)) throw prepared.error;
+          throw new Error(JSON.stringify(prepared.error));
         }
-        return r.value.txHash;
+        return await signAndSubmitPrepared(client, prepared.value, getApi);
       };
       const placeTxHash = await withTxLock(async () => {
         const api = await getApi();
@@ -324,8 +324,8 @@ function PayInner() {
           return await attempt();
         } catch (e) {
           if (!isStaleUtxoError(e)) throw e;
-          console.warn("[markPaid] built on stale UTxOs — waiting 20s for chain to settle, rebuilding");
-          await new Promise((r) => setTimeout(r, 20_000));
+          console.warn("[markPaid] built on stale UTxOs — waiting 30s for chain to settle, rebuilding");
+          await new Promise((r) => setTimeout(r, 30_000));
           return await attempt();
         }
       });

@@ -282,9 +282,9 @@ function MerchantInner() {
         } catch (e) {
           if (!isStaleUtxoError(e)) throw e;
           console.warn(
-            `[merchant] act:${kind} built on stale UTxOs — waiting 20s for chain to settle, rebuilding`,
+            `[merchant] act:${kind} built on stale UTxOs — waiting 30s for chain to settle, rebuilding`,
           );
-          await new Promise((r) => setTimeout(r, 20_000));
+          await new Promise((r) => setTimeout(r, 30_000));
           return await sign();
         }
       });

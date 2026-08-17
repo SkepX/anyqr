@@ -35,6 +35,17 @@ export async function buildClient(api: Cip30Api) {
   lucid.selectWallet.fromAPI(
     api as unknown as Parameters<typeof lucid.selectWallet.fromAPI>[0],
   );
+  // Coin-select from Blockfrost's CONFIRMED view, not the wallet's
+  // optimistic one. Lace's getUtxos() includes change from txs still in
+  // the mempool; building on a not-yet-confirmed output gets rejected
+  // with BadInputsUTxO by any node that hasn't seen the parent tx.
+  try {
+    const addr = await lucid.wallet().address();
+    const confirmed = await lucid.utxosAt(addr);
+    if (confirmed.length > 0) lucid.overrideUTxOs(confirmed);
+  } catch {
+    // Blockfrost hiccup — fall back to the wallet's own UTxO view.
+  }
   return createClient({
     lucid,
     validator: cfg.validator,
@@ -57,6 +68,17 @@ export function withTxLock<T>(fn: () => Promise<T>): Promise<T> {
     () => undefined,
   );
   return run;
+}
+
+/** Append work to the tx queue WITHOUT making the current caller wait.
+ *  Used to hold the queue until a just-submitted tx confirms: mempool
+ *  chaining is unreliable across Blockfrost's load-balanced nodes, so
+ *  the next tx must not build until this one is in a block. */
+function extendTxLock(fn: () => Promise<unknown>): void {
+  txChain = txChain.then(fn, fn).then(
+    () => undefined,
+    () => undefined,
+  );
 }
 
 /** Ledger rejections meaning the tx was built against a UTxO view that
@@ -107,7 +129,18 @@ export async function signAndSubmitPrepared(
   let lastErr: unknown = null;
   for (let attempt = 1; attempt <= 5; attempt++) {
     try {
-      return await provider.submitTx(cbor);
+      const hash = await provider.submitTx(cbor);
+      // Hold the tx queue (not this caller) until the tx lands in a
+      // block, so the next build sees its inputs spent and its change
+      // available. Cap the wait so a Blockfrost outage can't wedge the
+      // queue forever.
+      extendTxLock(() =>
+        Promise.race([
+          lucid.awaitTx(hash, 3_000),
+          new Promise((r) => setTimeout(r, 120_000)),
+        ]),
+      );
+      return hash;
     } catch (e) {
       lastErr = e;
       const msg = String((e as { message?: string })?.message ?? e);
