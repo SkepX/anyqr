@@ -57,21 +57,23 @@ export async function buildClient(api: Cip30Api) {
     if (!body.result?.EvaluationResult) {
       throw new Error(`unexpected eval response: ${JSON.stringify(body)}`);
     }
-    // Convert to the format Lucid expects (matches its own parser).
+    // Reshape into what Lucid Evolution expects — see fromLegacyRedeemerTag
+    // in @lucid-evolution/provider: spend/mint stay as-is, certificate→publish,
+    // withdrawal→withdraw. redeemer_tag is a STRING, not a numeric enum.
+    const tagMap: Record<string, string> = {
+      spend: "spend",
+      mint: "mint",
+      certificate: "publish",
+      withdrawal: "withdraw",
+    };
     return Object.entries(body.result.EvaluationResult).map(
       ([pointer, data]) => {
         const [pTag, pIndex] = pointer.split(":");
         const d = data as { memory: number; steps: number };
-        const tagMap: Record<string, number> = {
-          spend: 0,
-          mint: 1,
-          certificate: 2,
-          withdrawal: 3,
-        };
         return {
-          redeemer_tag: tagMap[pTag] ?? 0,
+          redeemer_tag: tagMap[pTag] ?? pTag,
           redeemer_index: Number(pIndex),
-          ex_units: { mem: d.memory, steps: d.steps },
+          ex_units: { mem: Number(d.memory), steps: Number(d.steps) },
         };
       },
     );
