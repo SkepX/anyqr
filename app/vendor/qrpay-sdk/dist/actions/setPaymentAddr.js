@@ -18,7 +18,7 @@ export const setPaymentAddr = (client) => {
         })
             .pay.ToContract(client.scriptAddress, inlineDatum(newDatum), escrowValue(client, order))
             .addSignerKey(userPkh)
-            .complete();
+            .complete({ localUPLCEval: false });
     })));
     const execute = (raw) => executeTx(prepare(raw));
     return { prepare, execute };

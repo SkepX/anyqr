@@ -21,7 +21,7 @@ export const acceptOrder = (client) => {
             .addSignerKey(merchant)
             .validFrom(Date.now() - 60_000)
             .validTo(Number(order.datum.accept_deadline) - 1000)
-            .complete();
+            .complete({ localUPLCEval: false });
     })));
     const execute = (raw) => executeTx(prepare(raw));
     return { prepare, execute };

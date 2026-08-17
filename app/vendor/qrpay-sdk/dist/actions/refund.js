@@ -14,7 +14,7 @@ export const refund = (client) => {
             .addSignerKey(user)
             .validFrom(Number(order.datum.complete_deadline) + 1000)
             .validTo(now + 5 * 60_000)
-            .complete();
+            .complete({ localUPLCEval: false });
     })));
     const execute = (raw) => executeTx(prepare(raw));
     return { prepare, execute };

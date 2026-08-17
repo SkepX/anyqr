@@ -14,7 +14,7 @@ export const complete = (client) => {
             .addSignerKey(merchant)
             .validFrom(Number(order.datum.dispute_deadline) + 1000)
             .validTo(now + 5 * 60_000)
-            .complete();
+            .complete({ localUPLCEval: false });
     })));
     const execute = (raw) => executeTx(prepare(raw));
     return { prepare, execute };

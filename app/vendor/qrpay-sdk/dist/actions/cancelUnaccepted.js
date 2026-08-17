@@ -11,7 +11,7 @@ export const cancelUnaccepted = (client) => {
             [client.usdcUnit]: order.datum.usdc_amount,
         })
             .addSignerKey(user)
-            .complete();
+            .complete({ localUPLCEval: false });
     })));
     const execute = (raw) => executeTx(prepare(raw));
     return { prepare, execute };

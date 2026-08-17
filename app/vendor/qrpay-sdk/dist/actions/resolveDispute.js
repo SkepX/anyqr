@@ -23,7 +23,7 @@ export const resolveDispute = (client) => {
                 [client.usdcUnit]: order.datum.usdc_amount,
             })
                 .addSignerKey(admin)
-                .complete();
+                .complete({ localUPLCEval: false });
         });
     }));
     const execute = (raw) => executeTx(prepare(raw));
