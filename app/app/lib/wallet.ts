@@ -106,8 +106,13 @@ export function WalletProvider({ children }: { children: ReactNode }) {
  *  wraps everything). */
 export function useWalletConnect(): WalletState {
   const ctx = useContext(WalletCtx);
-  const fallback = useWalletConnectInternal();
-  return ctx ?? fallback;
+  if (!ctx) {
+    // Provider must be mounted — layout wraps everything in WalletProvider.
+    // Failing loud here is better than silently spawning per-consumer state
+    // (each with its own polling intervals) that would cause render churn.
+    throw new Error("useWalletConnect: WalletProvider missing above this tree");
+  }
+  return ctx;
 }
 
 function useWalletConnectInternal(): WalletState {
@@ -117,9 +122,22 @@ function useWalletConnectInternal(): WalletState {
   const [restoring, setRestoring] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  // Detect on mount + when window.cardano might change (dev)
+  // Detect on mount + when window.cardano might change (dev).
+  // Only push a new array if the set of installed keys actually changed —
+  // otherwise every 2s tick would create a fresh reference and re-render
+  // every context consumer for no reason.
   useEffect(() => {
-    const scan = () => setInstalled(detectWallets());
+    const scan = () =>
+      setInstalled((prev) => {
+        const next = detectWallets();
+        if (
+          prev.length === next.length &&
+          prev.every((p, i) => p.key === next[i].key && p.label === next[i].label)
+        ) {
+          return prev;
+        }
+        return next;
+      });
     scan();
     const iv = setInterval(scan, 2000);
     return () => clearInterval(iv);

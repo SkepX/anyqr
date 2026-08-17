@@ -82,8 +82,24 @@ function MerchantInner() {
   const load = useCallback(async () => {
     const res = await fetch("/api/orders/list", { cache: "no-store" });
     if (!res.ok) return;
-    const { orders } = (await res.json()) as { orders: WireOrder[] };
-    setOrders(orders);
+    const { orders: next } = (await res.json()) as { orders: WireOrder[] };
+    // Skip the state update if the payload is byte-identical to the last
+    // poll — prevents a re-render (and the resulting visual "blink") every
+    // 2 seconds when nothing on-chain changed.
+    setOrders((prev) => {
+      if (
+        prev.length === next.length &&
+        prev.every(
+          (p, i) =>
+            p.orderId === next[i].orderId &&
+            p.status === next[i].status &&
+            p.merchantPaid === next[i].merchantPaid,
+        )
+      ) {
+        return prev;
+      }
+      return next;
+    });
   }, []);
 
   useEffect(() => {
@@ -189,8 +205,12 @@ function MerchantInner() {
   const all = [...orderMap.values()];
   // Filter accepted/paid to orders this merchant accepted (or that don't yet
   // have a merchant assigned).
+  // Until we've derived our own pkh, don't render accepted/paid rows —
+  // otherwise other merchants' orders would flash in for one tick and
+  // then filter out, which reads as the whole section "appearing and
+  // disappearing".
   const mine = (o: WireOrder) =>
-    !merchantPkh || !o.merchant || o.merchant === merchantPkh;
+    !!merchantPkh && (!o.merchant || o.merchant === merchantPkh);
   const placed = all.filter((o) => o.status === "Placed");
   const accepted = all.filter((o) => o.status === "Accepted" && mine(o));
   const paid = all.filter((o) => o.status === "Paid" && mine(o));
@@ -238,7 +258,23 @@ function MerchantInner() {
     const tick = () =>
       fetch(`/api/orders/merchant-mine?pkh=${merchantPkh}`)
         .then((r) => (r.ok ? r.json() : null))
-        .then((d) => live && d && setMerchantOrders(d.orders))
+        .then((d) => {
+          if (!live || !d) return;
+          setMerchantOrders((prev) => {
+            const next = d.orders as typeof prev;
+            if (
+              prev.length === next.length &&
+              prev.every(
+                (p, i) =>
+                  p.orderId === next[i].orderId &&
+                  p.fiatAmount === next[i].fiatAmount,
+              )
+            ) {
+              return prev;
+            }
+            return next;
+          });
+        })
         .catch(() => {});
     tick();
     const iv = setInterval(tick, 3000);
