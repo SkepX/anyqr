@@ -33,7 +33,7 @@ export const markPaid = (client: QrpayClient) => {
             .addSignerKey(signer)
             .validFrom(now - 60_000)
             .validTo(now + 5 * 60_000)
-            .complete();
+            .complete({ setCollateral: 2_000_000n });
         }),
       ),
     );

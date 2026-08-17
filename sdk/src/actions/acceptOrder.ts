@@ -33,7 +33,7 @@ export const acceptOrder = (client: QrpayClient) => {
             .addSignerKey(merchant)
             .validFrom(Date.now() - 60_000)
             .validTo(Number(order.datum.accept_deadline) - 1000)
-            .complete();
+            .complete({ setCollateral: 2_000_000n });
         }),
       ),
     );

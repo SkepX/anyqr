@@ -21,7 +21,7 @@ export const refund = (client: QrpayClient) => {
             .addSignerKey(user)
             .validFrom(Number(order.datum.complete_deadline) + 1000)
             .validTo(now + 5 * 60_000)
-            .complete();
+            .complete({ setCollateral: 2_000_000n });
         }),
       ),
     );

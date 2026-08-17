@@ -18,7 +18,7 @@ export const cancelUnaccepted = (client: QrpayClient) => {
               [client.usdcUnit]: order.datum.usdc_amount,
             })
             .addSignerKey(user)
-            .complete();
+            .complete({ setCollateral: 2_000_000n });
         }),
       ),
     );
