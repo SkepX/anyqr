@@ -216,55 +216,56 @@ export async function signAndSubmitPrepared(
       "BadInputsUTxO: inputs were consumed by a conflicting transaction",
     );
   };
+  // Three doors to the mempool, tried in order each round with the SAME
+  // signed cbor (never a new signature). The server relay goes first:
+  // browser sessions get sticky-routed to a stale Blockfrost submit
+  // backend, and the wallet's backend rides the same infrastructure —
+  // the lambda's network path has been reliably healthy.
+  const doors: Array<[string, () => Promise<string>]> = [
+    [
+      "server",
+      async () => {
+        const r = await fetch("/api/tx/submit", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ cbor }),
+        });
+        const j = (await r.json()) as { txHash?: string; error?: string };
+        if (!r.ok || !j.txHash) throw new Error(j.error ?? `server submit ${r.status}`);
+        return j.txHash;
+      },
+    ],
+    ["provider", () => provider.submitTx(cbor)],
+    ["wallet", () => signed.submit()],
+  ];
   for (let attempt = 1; ; attempt++) {
-    try {
-      console.log(`[submit] via provider (attempt ${attempt})`);
-      const hash = await withStepTimeout(
-        provider.submitTx(cbor),
-        20_000,
-        "provider submit",
-      );
-      console.log(`[submit] provider accepted the tx`);
-      holdQueueUntilConfirmed(hash);
-      return hash;
-    } catch (e) {
-      const msg = String((e as { message?: string })?.message ?? e);
-      const included = await resolveAlreadyIncluded(msg);
-      if (included) {
-        holdQueueUntilConfirmed(included);
-        return included;
-      }
-      const expired = lucid.currentSlot() > ttlSlot - 2;
-      const retriable = isMissingInputMsg(msg) || /timed out/i.test(msg);
-      if (!retriable || expired || Date.now() > giveUpAt) throw e;
-      console.warn(
-        `[submit] provider rejected/stalled (attempt ${attempt}):`,
-        msg.slice(0, 260),
-      );
-      // Second, independent door to the mempool: the wallet's own
-      // backend. Same signed cbor, no new signature. Whichever node is
-      // actually current accepts the tx.
+    let lastErr: unknown = null;
+    for (const [door, submit] of doors) {
       try {
-        console.log(`[submit] trying wallet path`);
-        const hash = await withStepTimeout(
-          signed.submit(),
-          30_000,
-          "wallet submit",
-        );
-        console.log(`[submit] wallet path accepted the tx`);
+        console.log(`[submit] via ${door} (attempt ${attempt})`);
+        const hash = await withStepTimeout(submit(), 25_000, `${door} submit`);
+        console.log(`[submit] ${door} accepted the tx`);
         holdQueueUntilConfirmed(hash);
         return hash;
-      } catch (e2) {
-        const msg2 = String((e2 as { message?: string })?.message ?? e2);
-        const included2 = await resolveAlreadyIncluded(msg2);
-        if (included2) {
-          holdQueueUntilConfirmed(included2);
-          return included2;
+      } catch (e) {
+        lastErr = e;
+        const msg = String((e as { message?: string })?.message ?? e);
+        const included = await resolveAlreadyIncluded(msg);
+        if (included) {
+          holdQueueUntilConfirmed(included);
+          return included;
         }
-        console.warn(`[submit] wallet path also failed:`, msg2.slice(0, 200));
+        const expired = lucid.currentSlot() > ttlSlot - 2;
+        const retriable = isMissingInputMsg(msg) || /timed out|server submit 5/i.test(msg);
+        if (!retriable || expired || Date.now() > giveUpAt) throw e;
+        console.warn(
+          `[submit] ${door} rejected/stalled (attempt ${attempt}):`,
+          msg.slice(0, 260),
+        );
       }
-      const delay = Math.min(5_000 * attempt, 15_000);
-      await new Promise((r) => setTimeout(r, delay));
     }
+    if (Date.now() > giveUpAt) throw lastErr;
+    const delay = Math.min(5_000 * attempt, 15_000);
+    await new Promise((r) => setTimeout(r, delay));
   }
 }
