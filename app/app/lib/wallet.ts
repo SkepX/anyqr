@@ -89,7 +89,7 @@ interface WalletState {
   error: string | null;
   connect: (walletKey: string) => Promise<Connection>;
   disconnect: () => void;
-  getApi: () => Promise<Cip30Api | null>;
+  getApi: (opts?: { fresh?: boolean }) => Promise<Cip30Api | null>;
 }
 
 const WalletCtx = createContext<WalletState | null>(null);
@@ -119,7 +119,60 @@ export function useWalletConnect(): WalletState {
 // stable api reference throughout a single tx.complete() -> sign -> submit
 // flow. Handing it a fresh handle on every call (or a proxy that
 // re-enables) breaks Lace, which hangs its second enable() silently.
+// getApi() only re-enables after a probe proves the cached channel dead.
 const enabledApis = new Map<string, Promise<Cip30Api>>();
+
+// Wallet extensions built on @cardano-sdk/web-extension (Lace, Begin)
+// run their API through a message channel to an MV3 service worker.
+// Chrome kills that worker after ~30s of inactivity, and the extension
+// permanently invalidates every handle handed out before the kill:
+// "RemoteApiShutdownError: Remote API with channel 'cardano-wallet-api'
+// was shutdown: object can no longer be used". The only remedy is a
+// fresh enable().
+const DEAD_CHANNEL_RE =
+  /shutdown|no longer be used|disconnected port|context invalidated|channel closed/i;
+
+export function isDeadChannelError(e: unknown): boolean {
+  const msg = (e as { message?: string })?.message;
+  return DEAD_CHANNEL_RE.test(typeof msg === "string" ? msg : String(e));
+}
+
+function withDeadline<T>(p: Promise<T>, ms: number, what: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const t = setTimeout(
+      () => reject(new Error(`${what} timed out after ${ms}ms`)),
+      ms,
+    );
+    p.then(
+      (v) => {
+        clearTimeout(t);
+        resolve(v);
+      },
+      (e) => {
+        clearTimeout(t);
+        reject(e);
+      },
+    );
+  });
+}
+
+/** Run `fn` while pinging the wallet every 10s. A long tx build (30s+ of
+ *  Blockfrost/UPLC work with zero wallet traffic) otherwise lets Chrome
+ *  idle-kill the extension's service worker, so the signTx at the end
+ *  lands on a dead channel. Each ping resets Chrome's ~30s idle timer. */
+export async function withWalletKeepAlive<T>(
+  api: Cip30Api,
+  fn: () => Promise<T>,
+): Promise<T> {
+  const iv = setInterval(() => {
+    void api.getNetworkId().catch(() => {});
+  }, 10_000);
+  try {
+    return await fn();
+  } finally {
+    clearInterval(iv);
+  }
+}
 
 function useWalletConnectInternal(): WalletState {
   const [conn, setConn] = useState<Connection | null>(null);
@@ -225,19 +278,38 @@ function useWalletConnectInternal(): WalletState {
 
   /** Return the CIP-30 api handle for the connected wallet.
    *  Reuses the enable() promise established at connect / restore time —
-   *  hand Lucid the SAME api reference for the whole tx flow. */
-  const getApi = useCallback(async (): Promise<Cip30Api | null> => {
-    if (!conn) return null;
-    let p = enabledApis.get(conn.key);
-    if (!p) {
+   *  hand Lucid the SAME api reference for the whole tx flow. Before
+   *  returning a cached handle, probe it with a cheap getNetworkId():
+   *  the extension's service worker may have idled out since we cached
+   *  it, permanently killing the handle's channel. Only then (or when
+   *  the caller passes { fresh: true } after a mid-flow death) do we
+   *  re-enable for a new channel — the origin is already authorized so
+   *  no popup appears. */
+  const getApi = useCallback(
+    async (opts?: { fresh?: boolean }): Promise<Cip30Api | null> => {
+      if (!conn) return null;
+      if (opts?.fresh) enabledApis.delete(conn.key);
+      const cached = enabledApis.get(conn.key);
+      if (cached) {
+        try {
+          const api = await cached;
+          await withDeadline(api.getNetworkId(), 3_000, "wallet probe");
+          return api;
+        } catch {
+          enabledApis.delete(conn.key);
+        }
+      }
       const inj = readInjected()[conn.key];
       if (!inj) return null;
-      p = inj.enable();
+      // 15s cap so a wedged extension surfaces as an error instead of
+      // an infinite spinner (Lace has been seen hanging enable()).
+      const p = withDeadline(inj.enable(), 15_000, "wallet enable()");
       enabledApis.set(conn.key, p);
       p.catch(() => enabledApis.delete(conn.key));
-    }
-    return p;
-  }, [conn]);
+      return p;
+    },
+    [conn],
+  );
 
   return useMemo(
     () => ({ conn, installed, busy, restoring, error, connect, disconnect, getApi }),

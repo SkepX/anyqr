@@ -2,8 +2,13 @@
 import { Suspense, useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { COUNTRIES } from "../lib/countries";
-import { buildClient } from "../lib/client-sdk";
-import { useWalletConnect } from "../lib/wallet";
+import { buildClient, signAndSubmitPrepared } from "../lib/client-sdk";
+import {
+  isDeadChannelError,
+  useWalletConnect,
+  withWalletKeepAlive,
+  type Cip30Api,
+} from "../lib/wallet";
 import { WalletButton } from "../components/WalletButton";
 
 function randomOrderId(): string {
@@ -147,19 +152,38 @@ function PayInner() {
       const fiatUnits = Math.round(fiatAmt * 100);
       const newOrderId = randomOrderId();
 
+      const runOnce = async (api: Cip30Api): Promise<string> => {
+        const { placeOrder } = await import("@qrpay/sdk");
+        const client = await buildClient(api);
+        const r = await placeOrder(client).execute({
+          orderId: newOrderId,
+          usdcAmount: usdcUnits,
+          fiatAmount: BigInt(fiatUnits),
+          fiatCurrency: ccyCode,
+          acceptWindowMin: 10,
+          completeWindowMin: 30,
+        });
+        if (r.isErr()) {
+          // Rethrow the SdkError itself when the wallet channel died so
+          // the retry below can recognize it (JSON.stringify drops the
+          // non-enumerable Error message).
+          if (isDeadChannelError(r.error)) throw r.error;
+          throw new Error(JSON.stringify(r.error));
+        }
+        return r.value.txHash;
+      };
       const api = await getApi();
       if (!api) throw new Error("Wallet unavailable");
-      const { placeOrder } = await import("@qrpay/sdk");
-      const client = await buildClient(api);
-      const r = await placeOrder(client).execute({
-        orderId: newOrderId,
-        usdcAmount: usdcUnits,
-        fiatAmount: BigInt(fiatUnits),
-        fiatCurrency: ccyCode,
-        acceptWindowMin: 10,
-        completeWindowMin: 30,
-      });
-      if (r.isErr()) throw new Error(JSON.stringify(r.error));
+      let placeTxHash: string;
+      try {
+        placeTxHash = await withWalletKeepAlive(api, () => runOnce(api));
+      } catch (e) {
+        if (!isDeadChannelError(e)) throw e;
+        console.warn("[pay] wallet channel died mid-flow — refreshing handle, retrying once");
+        const fresh = await getApi({ fresh: true });
+        if (!fresh) throw e;
+        placeTxHash = await withWalletKeepAlive(fresh, () => runOnce(fresh));
+      }
 
       // record off-chain metadata so the merchant can render the QR + so
       // /api/orders/mine can list this order for the buyer's Recent view.
@@ -176,12 +200,12 @@ function PayInner() {
           fiatCurrency: ccyCode,
           usdcAmount: usdcUnits.toString(),
           userPkh,
-          placeTxHash: r.value.txHash,
+          placeTxHash,
         }),
       });
 
       setOrderId(newOrderId);
-      setPlaceTx(r.value.txHash);
+      setPlaceTx(placeTxHash);
       setStatus("placed");
     } catch (e: unknown) {
       setStatus("error");
@@ -254,28 +278,44 @@ function PayInner() {
     setStatus("confirming");
     setError(null);
     try {
+      const runOnce = async (api: Cip30Api): Promise<string> => {
+        console.log("[markPaid] building tx for order", orderId);
+        const { markPaid } = await import("@qrpay/sdk");
+        const client = await buildClient(api);
+        const prepared = await markPaid(client).prepare({ orderId, disputeWindowMin: 5 });
+        if (prepared.isErr()) {
+          console.error("[markPaid] SDK error", prepared.error);
+          const inner =
+            (prepared.error?.cause as { cause?: { cause?: { failure?: { cause?: string } } } })
+              ?.cause?.cause?.failure?.cause ?? prepared.error?.message ?? "unknown";
+          throw new Error(String(inner));
+        }
+        // Sign through a revalidated handle — the long build may have
+        // outlived the wallet extension's idle-killed service worker.
+        console.log("[markPaid] signing + submitting");
+        return await signAndSubmitPrepared(client, prepared.value, getApi);
+      };
       const api = await getApi();
       if (!api) throw new Error("Wallet unavailable. Reconnect and try again.");
       const net = await api.getNetworkId();
       if (net !== 0)
         throw new Error("Your wallet is on Mainnet. Switch to Preprod and retry.");
-      console.log("[markPaid] submitting for order", orderId);
-      const { markPaid } = await import("@qrpay/sdk");
-      const client = await buildClient(api);
-      const r = await markPaid(client).execute({ orderId, disputeWindowMin: 5 });
-      if (r.isErr()) {
-        console.error("[markPaid] SDK error", r.error);
-        const inner =
-          (r.error?.cause as { cause?: { cause?: { failure?: { cause?: string } } } })
-            ?.cause?.cause?.failure?.cause ?? r.error?.message ?? "unknown";
-        throw new Error(String(inner));
+      let txHash: string;
+      try {
+        txHash = await withWalletKeepAlive(api, () => runOnce(api));
+      } catch (e) {
+        if (!isDeadChannelError(e)) throw e;
+        console.warn("[markPaid] wallet channel died mid-flow — refreshing handle, retrying once");
+        const fresh = await getApi({ fresh: true });
+        if (!fresh) throw e;
+        txHash = await withWalletKeepAlive(fresh, () => runOnce(fresh));
       }
-      console.log("[markPaid] tx", r.value.txHash);
+      console.log("[markPaid] tx", txHash);
       // Record client-side tx hash on the server registry.
       void fetch("/api/orders/mark-paid-tx", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ orderId, txHash: r.value.txHash }),
+        body: JSON.stringify({ orderId, txHash }),
       });
       // Payment confirmed on-chain — bounce the buyer back to their
       // wallet home. The merchant will auto-claim after the dispute

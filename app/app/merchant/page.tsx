@@ -4,8 +4,13 @@ import QRCode from "qrcode";
 import Link from "next/link";
 import { WalletButton } from "../components/WalletButton";
 import { RoleGuard } from "../components/RoleGuard";
-import { buildClient } from "../lib/client-sdk";
-import { useWalletConnect } from "../lib/wallet";
+import { buildClient, signAndSubmitPrepared } from "../lib/client-sdk";
+import {
+  isDeadChannelError,
+  useWalletConnect,
+  withWalletKeepAlive,
+  type Cip30Api,
+} from "../lib/wallet";
 import type { WireOrder } from "../lib/wire";
 
 const SCAN_URL = "https://preprod.cardanoscan.io/transaction/";
@@ -193,10 +198,7 @@ function MerchantInner() {
     }
     console.log(`[merchant] act:${kind} START orderId=${order.orderId.slice(0, 8)}`);
     try {
-      const sign = async (): Promise<string> => {
-        console.log(`[merchant] act:${kind} calling getApi`);
-        const api = await getApi();
-        if (!api) throw new Error("Wallet unavailable");
+      const runOnce = async (api: Cip30Api): Promise<string> => {
         console.log(`[merchant] act:${kind} got api, building Lucid client`);
         const t1 = performance.now();
         const client = await buildClient(api);
@@ -208,21 +210,48 @@ function MerchantInner() {
             .map((b) => b.toString(16).padStart(2, "0"))
             .join("");
           const { acceptOrder } = await import("@qrpay/sdk");
-          console.log(`[merchant] act:accept executing tx build+sign+submit`);
+          console.log(`[merchant] act:accept building tx`);
           const t2 = performance.now();
-          const r = await acceptOrder(client).execute({
+          const prepared = await acceptOrder(client).prepare({
             orderId: order.orderId,
             merchantPublicKey,
           });
-          console.log(`[merchant] act:accept execute done in ${Math.round(performance.now() - t2)}ms`, r.isOk() ? "OK" : "ERR");
-          if (r.isErr()) throw new Error(extractErr(r.error));
-          return r.value.txHash;
+          console.log(`[merchant] act:accept build done in ${Math.round(performance.now() - t2)}ms`, prepared.isOk() ? "OK" : "ERR");
+          if (prepared.isErr()) throw new Error(extractErr(prepared.error));
+          // Sign through a revalidated handle — the 30s+ build above is
+          // exactly long enough for Chrome to idle-kill the wallet's
+          // service worker, so the handle the client was built with may
+          // be dead by now.
+          console.log(`[merchant] act:accept signing + submitting`);
+          const txHash = await signAndSubmitPrepared(client, prepared.value, getApi);
+          console.log(`[merchant] act:accept submitted`);
+          return txHash;
         }
         const { complete } = await import("@qrpay/sdk");
-        console.log(`[merchant] act:complete executing`);
-        const r = await complete(client).execute({ orderId: order.orderId });
-        if (r.isErr()) throw new Error(extractErr(r.error));
-        return r.value.txHash;
+        console.log(`[merchant] act:complete building tx`);
+        const prepared = await complete(client).prepare({ orderId: order.orderId });
+        if (prepared.isErr()) throw new Error(extractErr(prepared.error));
+        console.log(`[merchant] act:complete signing + submitting`);
+        return await signAndSubmitPrepared(client, prepared.value, getApi);
+      };
+      const sign = async (): Promise<string> => {
+        console.log(`[merchant] act:${kind} calling getApi`);
+        const api = await getApi();
+        if (!api) throw new Error("Wallet unavailable");
+        try {
+          return await withWalletKeepAlive(api, () => runOnce(api));
+        } catch (e) {
+          // The extension worker died mid-flow and took the api handle
+          // with it. Open a fresh channel and retry the whole build+sign
+          // once — the tx was never submitted, so a rebuild is safe.
+          if (!isDeadChannelError(e)) throw e;
+          console.warn(
+            `[merchant] act:${kind} wallet channel died mid-flow — refreshing handle, retrying once`,
+          );
+          const fresh = await getApi({ fresh: true });
+          if (!fresh) throw e;
+          return await withWalletKeepAlive(fresh, () => runOnce(fresh));
+        }
       };
       const txHash = await sign();
       console.log(`[merchant] act:${kind} SUCCESS txHash=${txHash.slice(0, 10)}…`);
