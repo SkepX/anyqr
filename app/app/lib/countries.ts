@@ -11,6 +11,7 @@ export const COUNTRIES: Country[] = [
   { code: "INR", name: "India", flag: "🇮🇳", symbol: "₹", rail: "UPI", live: true },
   { code: "IDR", name: "Indonesia", flag: "🇮🇩", symbol: "Rp", rail: "QRIS" },
   { code: "BRL", name: "Brazil", flag: "🇧🇷", symbol: "R$", rail: "PIX" },
+  { code: "THB", name: "Thailand", flag: "🇹🇭", symbol: "฿", rail: "PromptPay" },
   { code: "VND", name: "Vietnam", flag: "🇻🇳", symbol: "₫", rail: "VietQR" },
   { code: "PHP", name: "Philippines", flag: "🇵🇭", symbol: "₱", rail: "QR Ph" },
   { code: "ARS", name: "Argentina", flag: "🇦🇷", symbol: "$", rail: "MercadoPago" },

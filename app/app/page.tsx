@@ -16,7 +16,7 @@ export default function Landing() {
             Spend stablecoins at any local QR.
             <br />
             <span className="text-[color:var(--text-muted)]">
-              9 countries.
+              10 countries.
             </span>
           </h1>
 
@@ -48,7 +48,7 @@ export default function Landing() {
           <div className="grid grid-cols-3 gap-6 max-w-lg">
             <Stat label="Chain" value="Cardano" />
             <Stat label="Asset" value="tUSDM" />
-            <Stat label="Rails" value="9" />
+            <Stat label="Rails" value="10" />
           </div>
         </div>
       </section>
