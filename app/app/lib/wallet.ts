@@ -133,11 +133,16 @@ function useWalletConnectInternal(): WalletState {
   const [restoring, setRestoring] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  // Detect on mount + when window.cardano might change (dev).
-  // Only push a new array if the set of installed keys actually changed —
-  // otherwise every 2s tick would create a fresh reference and re-render
-  // every context consumer for no reason.
+  console.log(`[wallet] provider render`, {
+    conn: conn ? { key: conn.key, addr: conn.address.slice(0, 12) } : null,
+    installedKeys: installed.map((i) => i.key),
+    busy,
+    restoring,
+    error,
+  });
+
   useEffect(() => {
+    console.log(`[wallet] detect-effect setup`);
     const scan = () =>
       setInstalled((prev) => {
         const next = detectWallets();
@@ -147,23 +152,31 @@ function useWalletConnectInternal(): WalletState {
         ) {
           return prev;
         }
+        console.log(
+          `[wallet] installed changed: [${prev.map((p) => p.key).join(",")}] → [${next.map((p) => p.key).join(",")}]`,
+        );
         return next;
       });
     scan();
     const iv = setInterval(scan, 2000);
-    return () => clearInterval(iv);
+    return () => {
+      console.log(`[wallet] detect-effect teardown`);
+      clearInterval(iv);
+    };
   }, []);
 
   // Auto-reconnect on mount if user was connected before.
   // Wallet extensions inject window.cardano asynchronously so we poll for
   // the specific wallet's injection for a short window before giving up.
   useEffect(() => {
+    console.log(`[wallet] restore-effect setup`);
     if (typeof window === "undefined") {
       setRestoring(false);
       return;
     }
     const saved = localStorage.getItem(STORAGE_KEY);
     if (!saved) {
+      console.log(`[wallet] restore: no saved wallet in localStorage`);
       setRestoring(false);
       return;
     }
@@ -171,7 +184,7 @@ function useWalletConnectInternal(): WalletState {
     (async () => {
       try {
         const parsed = JSON.parse(saved) as { key: string };
-        // Wait up to 4s for the specific wallet extension to inject itself.
+        console.log(`[wallet] restore: saved=${parsed.key}, polling for injection`);
         const start = Date.now();
         let inj = readInjected()[parsed.key];
         while (!inj && Date.now() - start < 4000) {
@@ -180,25 +193,28 @@ function useWalletConnectInternal(): WalletState {
           inj = readInjected()[parsed.key];
         }
         if (!inj) {
-          // Extension isn't installed anymore. Keep the saved key so the user
-          // can re-authorise; don't blow away localStorage.
+          console.warn(`[wallet] restore: ${parsed.key} not injected after 4s`);
           setRestoring(false);
           return;
         }
+        console.log(`[wallet] restore: injected after ${Date.now() - start}ms, calling enable`);
         const enablePromise = inj.enable();
         enabledApis.set(parsed.key, enablePromise);
         const api = await enablePromise;
         if (cancelled) return;
         const net = await api.getNetworkId();
         const addr = await getBech32Address(api, net);
+        console.log(`[wallet] restore: success key=${parsed.key} net=${net} addr=${addr.slice(0, 12)}`);
         setConn({ key: parsed.key, address: addr, networkId: net });
-      } catch {
+      } catch (e) {
+        console.warn(`[wallet] restore failed`, e);
         localStorage.removeItem(STORAGE_KEY);
       } finally {
         if (!cancelled) setRestoring(false);
       }
     })();
     return () => {
+      console.log(`[wallet] restore-effect teardown`);
       cancelled = true;
     };
   }, []);
@@ -235,18 +251,27 @@ function useWalletConnectInternal(): WalletState {
     if (typeof window !== "undefined") localStorage.removeItem(STORAGE_KEY);
   }, [conn]);
 
-  /** Return a cached CIP-30 API handle for the currently-connected wallet.
-   *  See `enabledApis` above for why we never call `enable()` twice. */
   const getApi = useCallback(async (): Promise<Cip30Api | null> => {
-    if (!conn) return null;
+    if (!conn) {
+      console.log(`[wallet] getApi called with no conn`);
+      return null;
+    }
     const inj = readInjected()[conn.key];
-    if (!inj) return null;
+    if (!inj) {
+      console.warn(`[wallet] getApi: ${conn.key} not injected`);
+      return null;
+    }
     let p = enabledApis.get(conn.key);
     if (!p) {
+      console.log(`[wallet] getApi: cache miss, calling enable() for ${conn.key}`);
       p = inj.enable();
       enabledApis.set(conn.key, p);
-      // If enable fails, drop the cache so the next call retries fresh.
-      p.catch(() => resetEnabledApi(conn.key));
+      p.catch((e) => {
+        console.warn(`[wallet] enable() rejected for ${conn.key}`, e);
+        resetEnabledApi(conn.key);
+      });
+    } else {
+      console.log(`[wallet] getApi: cache hit for ${conn.key}`);
     }
     return p;
   }, [conn]);

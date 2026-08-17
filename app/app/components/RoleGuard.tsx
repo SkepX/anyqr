@@ -20,14 +20,25 @@ export function RoleGuard({
   const { conn, restoring } = useWalletConnect();
   const { role, setRole, clearRole } = useWalletRole(conn?.address);
 
+  console.log(`[roleguard] render expects=${expects}`, {
+    conn: !!conn,
+    restoring,
+    role,
+    addr: conn?.address?.slice(0, 12),
+  });
+
   // Auto-assign role on first connect if none set.
   useEffect(() => {
-    if (conn && role === null) setRole(expects);
+    if (conn && role === null) {
+      console.log(`[roleguard] auto-assign role=${expects}`);
+      setRole(expects);
+    }
   }, [conn, role, expects, setRole]);
 
   // While auto-reconnect is in flight, don't render the onboarding — it
   // would flash the user out of a valid session for a second.
   if (restoring) {
+    console.log(`[roleguard] branch: restoring spinner`);
     return (
       <main className="flex-1 flex flex-col">
         <TopBar />
@@ -39,6 +50,7 @@ export function RoleGuard({
   }
 
   if (!conn) {
+    console.log(`[roleguard] branch: connect-prompt (no conn)`);
     return (
       <main className="flex-1 flex flex-col">
         <TopBar />
@@ -52,6 +64,7 @@ export function RoleGuard({
   }
 
   if (role && role !== expects) {
+    console.log(`[roleguard] branch: MISMATCH — role=${role} expects=${expects}`);
     return (
       <MismatchPrompt
         expects={expects}
@@ -62,6 +75,7 @@ export function RoleGuard({
     );
   }
 
+  console.log(`[roleguard] branch: children (role=${role})`);
   return <>{children}</>;
 }
 
