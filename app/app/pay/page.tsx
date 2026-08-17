@@ -64,16 +64,16 @@ function PayInner() {
   // accept-window expiry check (restored across reloads).
   const startedAtRef = useRef<number>(Date.now());
 
-  // Restore in-flight order across page reloads / HMR — but only if the saved
-  // status is genuinely mid-flight. Anything past markPaid (paid/completed)
-  // is treated as a finished flow and cleared so a fresh scan starts fresh.
+  // Restore in-flight order across page reloads / HMR — but only if the
+  // saved status is genuinely resumable. Transient signing states
+  // ("placing", "confirming") are NOT restorable: their in-memory
+  // promise chain is gone, and a settled order leaves them as eternal
+  // spinners. Anything past markPaid is a finished flow.
   const sessionKey = `qrpay:pay:${pa}`;
   const inFlightStatuses = new Set<Status>([
-    "placing",
     "placed",
     "accepted",
     "merchant_paid",
-    "confirming",
   ]);
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -93,10 +93,13 @@ function PayInner() {
         sessionStorage.removeItem(sessionKey);
         return;
       }
-      // A "placed" order older than its 10-min accept window can never
-      // be accepted — drop the zombie session so the amount form shows.
-      // The locked-funds banner (chain-driven) offers the reclaim path.
-      if (parsed.status === "placed" && age > 10.5 * 60_000) {
+      // Hard cap: nothing is legitimately mid-flight past the 30-min
+      // complete window. A "placed" order dies earlier, at its 10-min
+      // accept window — the locked-funds banner offers reclaim for it.
+      if (
+        age > 45 * 60_000 ||
+        (parsed.status === "placed" && age > 10.5 * 60_000)
+      ) {
         sessionStorage.removeItem(sessionKey);
         return;
       }
@@ -509,6 +512,10 @@ function PayInner() {
       // Payment confirmed on-chain — bounce the buyer back to their
       // wallet home. The merchant will auto-claim after the dispute
       // window; there's nothing left for the buyer to do here.
+      // The buyer's part is done — clear the saved session BEFORE
+      // navigating, or the next scan of this shop resurrects a
+      // "confirming" zombie.
+      if (typeof window !== "undefined") sessionStorage.removeItem(sessionKey);
       router.push(`/home?ccy=${ccyCode}&paid=${orderId}`);
     } catch (e) {
       console.error("[markPaid] failed", e);
