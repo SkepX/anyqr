@@ -1,5 +1,14 @@
 "use client";
-import { useCallback, useEffect, useState } from "react";
+import {
+  createContext,
+  createElement,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useState,
+  type ReactNode,
+} from "react";
 
 /** CIP-30 wallets we know how to detect + label. */
 export const KNOWN_WALLETS = [
@@ -70,7 +79,35 @@ export interface Connection {
   networkId: number; // 0 preprod/preview, 1 mainnet
 }
 
-export function useWalletConnect() {
+interface WalletState {
+  conn: Connection | null;
+  installed: DetectedWallet[];
+  busy: boolean;
+  error: string | null;
+  connect: (walletKey: string) => Promise<Connection>;
+  disconnect: () => void;
+  getApi: () => Promise<Cip30Api | null>;
+}
+
+const WalletCtx = createContext<WalletState | null>(null);
+
+/** Global provider — mount once at the app root so every consumer shares
+ *  a single connection state. */
+export function WalletProvider({ children }: { children: ReactNode }) {
+  const value = useWalletConnectInternal();
+  return createElement(WalletCtx.Provider, { value }, children);
+}
+
+/** Public hook — reads the shared context. Falls back to a fresh internal
+ *  instance if the provider isn't mounted (for safety, though the layout
+ *  wraps everything). */
+export function useWalletConnect(): WalletState {
+  const ctx = useContext(WalletCtx);
+  const fallback = useWalletConnectInternal();
+  return ctx ?? fallback;
+}
+
+function useWalletConnectInternal(): WalletState {
   const [conn, setConn] = useState<Connection | null>(null);
   const [installed, setInstalled] = useState<DetectedWallet[]>([]);
   const [busy, setBusy] = useState(false);
@@ -138,15 +175,10 @@ export function useWalletConnect() {
     return inj.enable();
   }, [conn]);
 
-  return {
-    conn,
-    installed,
-    busy,
-    error,
-    connect,
-    disconnect,
-    getApi,
-  };
+  return useMemo(
+    () => ({ conn, installed, busy, error, connect, disconnect, getApi }),
+    [conn, installed, busy, error, connect, disconnect, getApi],
+  );
 }
 
 export function shortAddr(a: string, n = 6): string {
