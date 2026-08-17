@@ -13,7 +13,7 @@ export default function Landing() {
       <section className="hero-grid flex-1 flex flex-col items-center justify-center px-6 py-20 relative">
         <div className="max-w-4xl w-full">
           <h1 className="display text-[56px] sm:text-[80px] leading-[0.95] tracking-[-0.04em] mb-6">
-            Spend stablecoins at any local QR.
+            Spend Cardano stablecoins at any local QR.
             <br />
             <span className="text-[color:var(--text-muted)]">
               10 countries.
