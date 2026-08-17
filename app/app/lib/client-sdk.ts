@@ -194,6 +194,28 @@ export async function signAndSubmitPrepared(
     /3117|unknown UTxO|BadInputsUTxO|TranslationLogicMissingInput|InsufficientCollateral|IncorrectTotalCollateralField|NoCollateralInputs|Could not submit transaction/i.test(
       m,
     );
+  // "All inputs are spent … probably already been included": a duplicate
+  // submission of a tx that already reached the chain — a SUCCESS, not a
+  // failure. (A 20s timeout on a slow-but-working node makes duplicates
+  // routine.) Verify OUR hash is really there; if the inputs were taken
+  // by a different tx instead, escalate as BadInputs so the caller
+  // rebuilds.
+  const resolveAlreadyIncluded = async (msg: string): Promise<string | null> => {
+    if (!/already been included|All inputs are spent/i.test(msg)) return null;
+    const hash = signed.toHash();
+    console.log("[submit] node says already included — verifying", hash.slice(0, 10));
+    const found = await Promise.race([
+      lucid.awaitTx(hash, 3_000),
+      new Promise<boolean>((r) => setTimeout(() => r(false), 90_000)),
+    ]);
+    if (found) {
+      console.log("[submit] confirmed: our tx is on-chain");
+      return hash;
+    }
+    throw new Error(
+      "BadInputsUTxO: inputs were consumed by a conflicting transaction",
+    );
+  };
   for (let attempt = 1; ; attempt++) {
     try {
       console.log(`[submit] via provider (attempt ${attempt})`);
@@ -207,6 +229,11 @@ export async function signAndSubmitPrepared(
       return hash;
     } catch (e) {
       const msg = String((e as { message?: string })?.message ?? e);
+      const included = await resolveAlreadyIncluded(msg);
+      if (included) {
+        holdQueueUntilConfirmed(included);
+        return included;
+      }
       const expired = lucid.currentSlot() > ttlSlot - 2;
       const retriable = isMissingInputMsg(msg) || /timed out/i.test(msg);
       if (!retriable || expired || Date.now() > giveUpAt) throw e;
@@ -228,10 +255,13 @@ export async function signAndSubmitPrepared(
         holdQueueUntilConfirmed(hash);
         return hash;
       } catch (e2) {
-        console.warn(
-          `[submit] wallet path also failed:`,
-          String((e2 as { message?: string })?.message ?? e2).slice(0, 200),
-        );
+        const msg2 = String((e2 as { message?: string })?.message ?? e2);
+        const included2 = await resolveAlreadyIncluded(msg2);
+        if (included2) {
+          holdQueueUntilConfirmed(included2);
+          return included2;
+        }
+        console.warn(`[submit] wallet path also failed:`, msg2.slice(0, 200));
       }
       const delay = Math.min(5_000 * attempt, 15_000);
       await new Promise((r) => setTimeout(r, delay));
