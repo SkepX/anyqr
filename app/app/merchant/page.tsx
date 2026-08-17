@@ -4,7 +4,12 @@ import QRCode from "qrcode";
 import Link from "next/link";
 import { WalletButton } from "../components/WalletButton";
 import { RoleGuard } from "../components/RoleGuard";
-import { buildClient, signAndSubmitPrepared } from "../lib/client-sdk";
+import {
+  buildClient,
+  isStaleUtxoError,
+  signAndSubmitPrepared,
+  withTxLock,
+} from "../lib/client-sdk";
 import {
   isDeadChannelError,
   useWalletConnect,
@@ -214,6 +219,15 @@ function MerchantInner() {
             .map((b) => b.toString(16).padStart(2, "0"))
             .join("");
           const { acceptOrder } = await import("@qrpay/sdk");
+          if (order.pending) {
+            // Registry-only row — the place tx hasn't been indexed yet.
+            // Wait for it so findOrderById inside prepare() can see it.
+            console.log(`[merchant] act:accept order pending indexing — waiting for chain`);
+            await client.waitForStatus(order.orderId, "Placed", {
+              timeoutMs: 90_000,
+              intervalMs: 3_000,
+            });
+          }
           console.log(`[merchant] act:accept building tx`);
           const t2 = performance.now();
           const prepared = await acceptOrder(client).prepare({
@@ -259,7 +273,21 @@ function MerchantInner() {
           return await withWalletKeepAlive(fresh, () => runOnce(fresh));
         }
       };
-      const txHash = await sign();
+      // Serialize wallet txs (a click racing the auto-complete timer
+      // must not build from the same UTxO snapshot), and on a stale-
+      // UTxO rejection wait one block and rebuild fresh once.
+      const txHash = await withTxLock(async () => {
+        try {
+          return await sign();
+        } catch (e) {
+          if (!isStaleUtxoError(e)) throw e;
+          console.warn(
+            `[merchant] act:${kind} built on stale UTxOs — waiting 20s for chain to settle, rebuilding`,
+          );
+          await new Promise((r) => setTimeout(r, 20_000));
+          return await sign();
+        }
+      });
       console.log(`[merchant] act:${kind} SUCCESS txHash=${txHash.slice(0, 10)}…`);
       // Record the hash so home/recent and merchant desk can show it.
       await fetch("/api/orders/record-tx", {

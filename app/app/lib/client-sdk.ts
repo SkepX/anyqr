@@ -45,6 +45,31 @@ export async function buildClient(api: Cip30Api) {
 
 type BuiltClient = Awaited<ReturnType<typeof buildClient>>;
 
+// One wallet signs one tx at a time. Two flows building concurrently (a
+// user click racing the auto-complete timer) select from the same UTxO
+// snapshot — the first submit consumes it and the second dies on
+// BadInputsUTxO. The lock serializes build+sign+submit per tab.
+let txChain: Promise<unknown> = Promise.resolve();
+export function withTxLock<T>(fn: () => Promise<T>): Promise<T> {
+  const run = txChain.then(fn, fn);
+  txChain = run.then(
+    () => undefined,
+    () => undefined,
+  );
+  return run;
+}
+
+/** Ledger rejections meaning the tx was built against a UTxO view that
+ *  a just-submitted tx has already invalidated (spent inputs, cascading
+ *  collateral/value complaints). A fresh rebuild after ~1 block fixes
+ *  these; anything else is a real error. */
+const STALE_UTXO_RE =
+  /BadInputsUTxO|TranslationLogicMissingInput|ValueNotConservedUTxO|InsufficientCollateral|CollateralContainsNonADA|NoCollateralInputs|IncorrectTotalCollateralField/i;
+export function isStaleUtxoError(e: unknown): boolean {
+  const msg = String((e as { message?: string })?.message ?? e);
+  return STALE_UTXO_RE.test(msg);
+}
+
 /** Sign + submit a prepared tx through a freshly validated wallet handle.
  *
  *  The build phase runs 30s+ with zero wallet traffic — long enough for

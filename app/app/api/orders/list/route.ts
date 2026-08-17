@@ -47,5 +47,43 @@ export async function GET() {
       };
     })
     .filter((o) => o !== null);
+
+  // Fast path: a just-placed order takes a block (~20-60s) to reach
+  // Blockfrost's index, but the registry knows it the moment the buyer
+  // places. Surface those as `pending` rows so the merchant sees them
+  // within one poll; accepting waits client-side for indexing.
+  const ACCEPT_WINDOW_MS = 10 * 60_000;
+  const seen = new Set(orders.map((o) => o.orderId));
+  for (const m of allMeta) {
+    if (seen.has(m.orderId)) continue;
+    if (!m.placeTxHash) continue; // never made it on-chain
+    if (m.acceptTxHash || m.completeTxHash) continue; // already progressed
+    if (now - m.placedAt > ACCEPT_WINDOW_MS) continue; // expired
+    orders.push({
+      orderId: m.orderId,
+      txHash: m.placeTxHash,
+      outputIndex: 0,
+      user: m.userPkh ?? "",
+      merchant: null,
+      merchantPubkey: "",
+      usdcAmount: m.usdcAmount,
+      fiatCurrency: m.fiatCurrency,
+      fiatAmount: String(Math.round(m.fiatAmount * 100)),
+      encryptedPaymentAddr: "",
+      status: "Placed",
+      pending: true,
+      acceptDeadline: m.placedAt + ACCEPT_WINDOW_MS,
+      completeDeadline: m.placedAt + 40 * 60_000,
+      disputeDeadline: 0,
+      paymentAddress: m.paymentAddress,
+      payeeName: m.payeeName ?? null,
+      buyerConfirmed: m.buyerConfirmed ?? null,
+      merchantPaid: m.merchantPaid ?? null,
+      placeTxHash: m.placeTxHash,
+      acceptTxHash: null,
+      buyerConfirmedTxHash: null,
+      completeTxHash: null,
+    });
+  }
   return NextResponse.json({ orders });
 }

@@ -2,7 +2,12 @@
 import { Suspense, useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { COUNTRIES } from "../lib/countries";
-import { buildClient, signAndSubmitPrepared } from "../lib/client-sdk";
+import {
+  buildClient,
+  isStaleUtxoError,
+  signAndSubmitPrepared,
+  withTxLock,
+} from "../lib/client-sdk";
 import {
   isDeadChannelError,
   useWalletConnect,
@@ -172,18 +177,19 @@ function PayInner() {
         }
         return r.value.txHash;
       };
-      const api = await getApi();
-      if (!api) throw new Error("Wallet unavailable");
-      let placeTxHash: string;
-      try {
-        placeTxHash = await withWalletKeepAlive(api, () => runOnce(api));
-      } catch (e) {
-        if (!isDeadChannelError(e)) throw e;
-        console.warn("[pay] wallet channel died mid-flow — refreshing handle, retrying once");
-        const fresh = await getApi({ fresh: true });
-        if (!fresh) throw e;
-        placeTxHash = await withWalletKeepAlive(fresh, () => runOnce(fresh));
-      }
+      const placeTxHash = await withTxLock(async () => {
+        const api = await getApi();
+        if (!api) throw new Error("Wallet unavailable");
+        try {
+          return await withWalletKeepAlive(api, () => runOnce(api));
+        } catch (e) {
+          if (!isDeadChannelError(e)) throw e;
+          console.warn("[pay] wallet channel died mid-flow — refreshing handle, retrying once");
+          const fresh = await getApi({ fresh: true });
+          if (!fresh) throw e;
+          return await withWalletKeepAlive(fresh, () => runOnce(fresh));
+        }
+      });
 
       // record off-chain metadata so the merchant can render the QR + so
       // /api/orders/mine can list this order for the buyer's Recent view.
@@ -300,16 +306,29 @@ function PayInner() {
       const net = await api.getNetworkId();
       if (net !== 0)
         throw new Error("Your wallet is on Mainnet. Switch to Preprod and retry.");
-      let txHash: string;
-      try {
-        txHash = await withWalletKeepAlive(api, () => runOnce(api));
-      } catch (e) {
-        if (!isDeadChannelError(e)) throw e;
-        console.warn("[markPaid] wallet channel died mid-flow — refreshing handle, retrying once");
-        const fresh = await getApi({ fresh: true });
-        if (!fresh) throw e;
-        txHash = await withWalletKeepAlive(fresh, () => runOnce(fresh));
-      }
+      const attempt = async (): Promise<string> => {
+        const live = await getApi();
+        if (!live) throw new Error("Wallet unavailable. Reconnect and try again.");
+        try {
+          return await withWalletKeepAlive(live, () => runOnce(live));
+        } catch (e) {
+          if (!isDeadChannelError(e)) throw e;
+          console.warn("[markPaid] wallet channel died mid-flow — refreshing handle, retrying once");
+          const fresh = await getApi({ fresh: true });
+          if (!fresh) throw e;
+          return await withWalletKeepAlive(fresh, () => runOnce(fresh));
+        }
+      };
+      const txHash = await withTxLock(async () => {
+        try {
+          return await attempt();
+        } catch (e) {
+          if (!isStaleUtxoError(e)) throw e;
+          console.warn("[markPaid] built on stale UTxOs — waiting 20s for chain to settle, rebuilding");
+          await new Promise((r) => setTimeout(r, 20_000));
+          return await attempt();
+        }
+      });
       console.log("[markPaid] tx", txHash);
       // Record client-side tx hash on the server registry.
       void fetch("/api/orders/mark-paid-tx", {

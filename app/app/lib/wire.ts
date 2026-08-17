@@ -11,6 +11,10 @@ export interface WireOrder {
   fiatAmount: string;
   encryptedPaymentAddr: string;
   status: "Placed" | "Accepted" | "Paid" | "Disputed";
+  /** True when the order exists only in the off-chain registry so far —
+   *  the place tx was submitted but Blockfrost hasn't indexed it yet.
+   *  Shown to merchants immediately; accepting waits for indexing. */
+  pending?: boolean;
   acceptDeadline: number;
   completeDeadline: number;
   disputeDeadline: number;
