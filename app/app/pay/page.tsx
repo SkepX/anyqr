@@ -523,6 +523,13 @@ function PayInner() {
     }
     setStatus("confirming");
     setError(null);
+    // Optimistic: tell the merchant NOW — their screen flips within a
+    // poll instead of after the ~10s tx pipeline. Reverted on failure.
+    void fetch("/api/orders/mark-paid-tx", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ orderId, confirming: true }),
+    }).catch(() => {});
     try {
       const runOnce = async (api: Cip30Api): Promise<string> => {
         console.log("[markPaid] building tx for order", orderId);
@@ -597,6 +604,13 @@ function PayInner() {
       router.push(`/home?ccy=${ccyCode}&paid=${orderId}`);
     } catch (e) {
       console.error("[markPaid] failed", e);
+      // Roll back the optimistic confirmation so the merchant's screen
+      // isn't left claiming a confirmation that never landed.
+      void fetch("/api/orders/mark-paid-tx", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ orderId, revert: true }),
+      }).catch(() => {});
       setStatus("merchant_paid");
       setError(String(e instanceof Error ? e.message : e));
     }
