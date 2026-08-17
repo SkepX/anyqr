@@ -11,10 +11,11 @@ export default function Landing() {
       </header>
 
       <section className="hero-grid flex-1 flex flex-col items-center justify-center px-6 py-20 relative">
-        <div className="max-w-4xl w-full">
-          <h1 className="display text-[56px] sm:text-[80px] leading-[0.95] tracking-[-0.04em] mb-6">
-            Spend Cardano stablecoins at any local QR.
+        <div className="max-w-3xl w-full">
+          <h1 className="display text-[48px] sm:text-[64px] leading-[1] tracking-[-0.035em] mb-6">
+            Spend Cardano stablecoins
             <br />
+            at any local QR.{" "}
             <span className="text-[color:var(--text-muted)]">
               10 countries.
             </span>
@@ -27,7 +28,7 @@ export default function Landing() {
           </p>
 
           {/* Role picker */}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-12 max-w-3xl">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-12">
             <RoleCard
               href="/start"
               badge="For anyone with a wallet"
