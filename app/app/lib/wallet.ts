@@ -222,16 +222,8 @@ function useWalletConnectInternal(): WalletState {
   const [restoring, setRestoring] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  console.log(`[wallet] provider render`, {
-    conn: conn ? { key: conn.key, addr: conn.address.slice(0, 12) } : null,
-    installedKeys: installed.map((i) => i.key),
-    busy,
-    restoring,
-    error,
-  });
 
   useEffect(() => {
-    console.log(`[wallet] detect-effect setup`);
     const scan = () =>
       setInstalled((prev) => {
         const next = detectWallets();
@@ -241,31 +233,23 @@ function useWalletConnectInternal(): WalletState {
         ) {
           return prev;
         }
-        console.log(
-          `[wallet] installed changed: [${prev.map((p) => p.key).join(",")}] → [${next.map((p) => p.key).join(",")}]`,
-        );
         return next;
       });
     scan();
     const iv = setInterval(scan, 2000);
-    return () => {
-      console.log(`[wallet] detect-effect teardown`);
-      clearInterval(iv);
-    };
+    return () => clearInterval(iv);
   }, []);
 
   // Auto-reconnect on mount if user was connected before.
   // Wallet extensions inject window.cardano asynchronously so we poll for
   // the specific wallet's injection for a short window before giving up.
   useEffect(() => {
-    console.log(`[wallet] restore-effect setup`);
     if (typeof window === "undefined") {
       setRestoring(false);
       return;
     }
     const saved = localStorage.getItem(STORAGE_KEY);
     if (!saved) {
-      console.log(`[wallet] restore: no saved wallet in localStorage`);
       setRestoring(false);
       return;
     }
@@ -273,7 +257,6 @@ function useWalletConnectInternal(): WalletState {
     (async () => {
       try {
         const parsed = JSON.parse(saved) as { key: string };
-        console.log(`[wallet] restore: saved=${parsed.key}, polling for injection`);
         const start = Date.now();
         let inj = readInjected()[parsed.key];
         while (!inj && Date.now() - start < 4000) {
@@ -282,28 +265,23 @@ function useWalletConnectInternal(): WalletState {
           inj = readInjected()[parsed.key];
         }
         if (!inj) {
-          console.warn(`[wallet] restore: ${parsed.key} not injected after 4s`);
           setRestoring(false);
           return;
         }
-        console.log(`[wallet] restore: injected after ${Date.now() - start}ms, calling enable`);
         const enablePromise = inj.enable();
         enabledApis.set(parsed.key, enablePromise);
         const api = await enablePromise;
         if (cancelled) return;
         const net = await api.getNetworkId();
         const addr = await getBech32Address(api, net);
-        console.log(`[wallet] restore: success key=${parsed.key} net=${net} addr=${addr.slice(0, 12)}`);
         setConn({ key: parsed.key, address: addr, networkId: net });
-      } catch (e) {
-        console.warn(`[wallet] restore failed`, e);
+      } catch {
         localStorage.removeItem(STORAGE_KEY);
       } finally {
         if (!cancelled) setRestoring(false);
       }
     })();
     return () => {
-      console.log(`[wallet] restore-effect teardown`);
       cancelled = true;
     };
   }, []);

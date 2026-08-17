@@ -72,19 +72,8 @@ function MerchantInner() {
   const emptyStreak = useRef(0);
   const mountId = useRef(Math.random().toString(36).slice(2, 7));
 
-  useEffect(() => {
-    console.log(`[merchant] MOUNT id=${mountId.current}`);
-    return () => console.log(`[merchant] UNMOUNT id=${mountId.current}`);
-  }, []);
 
-  console.log(
-    `[merchant] render id=${mountId.current}`,
-    { conn: !!conn, merchantPkh: merchantPkh?.slice(0, 8), ordersLen: orders.length, pendingLen: Object.keys(pendingAccepts).length, busyKeys: Object.keys(busy).filter((k) => busy[k]), error: !!error },
-  );
-
-  // Derive merchant pkh from connected wallet
   useEffect(() => {
-    console.log(`[merchant] pkh-effect fires`, { conn: !!conn, addr: conn?.address?.slice(0, 12) });
     if (!conn) {
       setMerchantPkh(null);
       return;
@@ -92,22 +81,15 @@ function MerchantInner() {
     let live = true;
     (async () => {
       const { paymentCredentialOf } = await import("@lucid-evolution/lucid");
-      if (!live) {
-        console.log(`[merchant] pkh-effect cancelled mid-import`);
-        return;
-      }
-      const pkh = paymentCredentialOf(conn.address).hash;
-      console.log(`[merchant] setMerchantPkh ${pkh.slice(0, 8)}`);
-      setMerchantPkh(pkh);
+      if (!live) return;
+      setMerchantPkh(paymentCredentialOf(conn.address).hash);
     })();
     return () => {
       live = false;
     };
   }, [conn]);
 
-  // Fetch this wallet's tUSDM balance
   useEffect(() => {
-    console.log(`[merchant] balance-effect fires`, { conn: !!conn });
     if (!conn) {
       setBalance(null);
       return;
@@ -117,74 +99,43 @@ function MerchantInner() {
     const unit =
       process.env.NEXT_PUBLIC_TUSDC_POLICY_ID! +
       process.env.NEXT_PUBLIC_TUSDC_ASSET_NAME!;
-    const tick = () => {
-      const t0 = performance.now();
-      console.log(`[merchant] balance fetch start`);
-      return fetch(
+    const tick = () =>
+      fetch(
         `https://cardano-preprod.blockfrost.io/api/v0/addresses/${conn.address}`,
         { headers: { project_id: key ?? "" } },
       )
         .then((r) => (r.ok ? r.json() : null))
         .then((d) => {
-          if (!live) {
-            console.log(`[merchant] balance fetch: unmounted, discarding`);
-            return;
-          }
-          if (!d?.amount) {
-            console.log(`[merchant] balance fetch: no amount`);
-            return;
-          }
+          if (!live || !d?.amount) return;
           const asset = d.amount.find(
             (a: { unit: string; quantity: string }) => a.unit === unit,
           );
-          const newBal = asset ? (Number(asset.quantity) / 1_000_000).toFixed(3) : "0.000";
-          console.log(
-            `[merchant] balance fetched in ${Math.round(performance.now() - t0)}ms — ${newBal}`,
-          );
-          setBalance(newBal);
+          setBalance(asset ? (Number(asset.quantity) / 1_000_000).toFixed(3) : "0.000");
         })
-        .catch((e) => console.warn(`[merchant] balance fetch failed`, e));
-    };
+        .catch(() => {});
     tick();
     const iv = setInterval(tick, 6000);
     return () => {
-      console.log(`[merchant] balance-effect teardown`);
       live = false;
       clearInterval(iv);
     };
   }, [conn]);
 
   const load = useCallback(async () => {
-    const t0 = performance.now();
-    console.log(`[merchant] load start`);
     let next: WireOrder[];
     try {
       const res = await fetch("/api/orders/list", { cache: "no-store" });
-      if (!res.ok) {
-        console.log(`[merchant] load HTTP ${res.status} — skip`);
-        return;
-      }
+      if (!res.ok) return;
       const j = (await res.json()) as { orders: WireOrder[] };
       next = j.orders.map(mergeMeta);
-      console.log(
-        `[merchant] load done in ${Math.round(performance.now() - t0)}ms — ${next.length} orders`,
-        next.map((o) => `${o.orderId.slice(0, 6)}:${o.status}${o.paymentAddress ? "+meta" : ""}`),
-      );
-    } catch (e) {
-      console.warn(`[merchant] load threw`, e);
-      return; // network hiccup — don't touch state
+    } catch {
+      return;
     }
     setOrders((prev) => {
       if (next.length === 0 && prev.length > 0) {
         emptyStreak.current += 1;
-        console.log(
-          `[merchant] sticky: server returned 0, prev had ${prev.length}, streak=${emptyStreak.current}`,
-        );
         if (emptyStreak.current < 3) return prev;
-        console.log(`[merchant] sticky: cleared after 3 empty responses`);
       } else {
-        if (emptyStreak.current > 0)
-          console.log(`[merchant] sticky: reset streak (was ${emptyStreak.current})`);
         emptyStreak.current = 0;
       }
       if (
@@ -198,32 +149,21 @@ function MerchantInner() {
       ) {
         return prev;
       }
-      console.log(
-        `[merchant] setOrders replace: ${prev.length} → ${next.length}`,
-      );
       return next;
     });
   }, []);
 
   useEffect(() => {
-    console.log(`[merchant] load-loop effect setup`);
     let stop = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
     const loop = async () => {
-      if (stop) {
-        console.log(`[merchant] load-loop stopped before start`);
-        return;
-      }
+      if (stop) return;
       await load();
-      if (stop) {
-        console.log(`[merchant] load-loop stopped after load`);
-        return;
-      }
+      if (stop) return;
       timer = setTimeout(loop, 4000);
     };
     void loop();
     return () => {
-      console.log(`[merchant] load-loop teardown`);
       stop = true;
       if (timer) clearTimeout(timer);
     };
@@ -284,15 +224,34 @@ function MerchantInner() {
         if (r.isErr()) throw new Error(extractErr(r.error));
         return r.value.txHash;
       };
+      // Hard 60s ceiling — Lucid's tx.complete() sometimes hangs
+      // silently inside Blockfrost's tx-evaluate endpoint, and Lace's
+      // occasional messaging failures compound it. A stuck signing
+      // stays "Sending…" forever with no error; better to bail cleanly.
+      const withTimeout = <T,>(p: Promise<T>): Promise<T> =>
+        Promise.race([
+          p,
+          new Promise<T>((_, rej) =>
+            setTimeout(
+              () =>
+                rej(
+                  new Error(
+                    `${kind} timed out after 60s — wallet or network unresponsive. Retry, or try another wallet (Nami/Eternl).`,
+                  ),
+                ),
+              60_000,
+            ),
+          ),
+        ]);
       let txHash: string;
       try {
-        txHash = await sign();
+        txHash = await withTimeout(sign());
       } catch (e) {
         console.warn(`[merchant] act:${kind} first attempt failed`, e);
         if (isWalletChannelClosed(e) && conn) {
           console.warn(`[merchant] wallet channel closed, retrying ${kind} with fresh handle`);
           resetEnabledApi(conn.key);
-          txHash = await sign();
+          txHash = await withTimeout(sign());
         } else {
           throw e;
         }
@@ -421,28 +380,15 @@ function MerchantInner() {
     Array<{ orderId: string; fiatAmount: string; fiatCurrency: string }>
   >([]);
   useEffect(() => {
-    console.log(`[merchant] merchant-mine effect fires`, { merchantPkh: merchantPkh?.slice(0, 8) });
     if (!merchantPkh) return;
     let stop = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
     const tick = async () => {
       if (stop) return;
-      const t0 = performance.now();
-      console.log(`[merchant] merchant-mine fetch start`);
       try {
         const r = await fetch(`/api/orders/merchant-mine?pkh=${merchantPkh}`);
-        if (stop) {
-          console.log(`[merchant] merchant-mine stopped mid-fetch`);
-          return;
-        }
-        if (!r.ok) {
-          console.log(`[merchant] merchant-mine HTTP ${r.status} — skip`);
-          return;
-        }
+        if (stop || !r.ok) return;
         const d = await r.json();
-        console.log(
-          `[merchant] merchant-mine done in ${Math.round(performance.now() - t0)}ms — ${d.orders.length} orders`,
-        );
         if (stop) return;
         setMerchantOrders((prev) => {
           const next = d.orders as typeof prev;
@@ -456,20 +402,16 @@ function MerchantInner() {
           ) {
             return prev;
           }
-          console.log(
-            `[merchant] setMerchantOrders replace: ${prev.length} → ${next.length}`,
-          );
           return next;
         });
-      } catch (e) {
-        console.warn(`[merchant] merchant-mine threw`, e);
+      } catch {
+        /* ignore */
       } finally {
         if (!stop) timer = setTimeout(tick, 6000);
       }
     };
     void tick();
     return () => {
-      console.log(`[merchant] merchant-mine teardown`);
       stop = true;
       if (timer) clearTimeout(timer);
     };
