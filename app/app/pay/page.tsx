@@ -305,7 +305,7 @@ function PayInner() {
       const runOnce = async (api: Cip30Api): Promise<string> => {
         console.log("[markPaid] building tx for order", orderId);
         const { markPaid } = await import("@qrpay/sdk");
-        const client = await buildClient(api);
+        const client = await buildClient(api, 8);
         const prepared = await markPaid(client).prepare({ orderId, disputeWindowMin: 1 });
         if (prepared.isErr()) {
           console.error("[markPaid] SDK error", prepared.error);

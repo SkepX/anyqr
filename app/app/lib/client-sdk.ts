@@ -21,8 +21,11 @@ export async function fetchConfig(): Promise<QrpayBrowserConfig> {
   return _config;
 }
 
-/** Build a fully configured QrpayClient that signs with the given CIP-30 API. */
-export async function buildClient(api: Cip30Api) {
+/** Build a fully configured QrpayClient that signs with the given CIP-30 API.
+ *  `minFreeAda` preflights the wallet's spendable tADA: script spends need
+ *  fees + 5 tADA collateral + min-ADA on outputs, and a wallet below that
+ *  produces endless inscrutable ledger rejections. */
+export async function buildClient(api: Cip30Api, minFreeAda = 3) {
   const cfg = await fetchConfig();
   const { Lucid, Blockfrost } = await import("@lucid-evolution/lucid");
   const { createClient } = await import("@qrpay/sdk");
@@ -46,6 +49,14 @@ export async function buildClient(api: Cip30Api) {
   } catch {
     // Blockfrost hiccup — fall back to the wallet's own UTxO view.
   }
+  const utxos = await lucid.wallet().getUtxos();
+  let lovelace = BigInt(0);
+  for (const u of utxos) lovelace += u.assets.lovelace ?? BigInt(0);
+  const ada = Number(lovelace) / 1e6;
+  if (ada < minFreeAda)
+    throw new Error(
+      `Wallet has only ${ada.toFixed(2)} tADA. This action needs about ${minFreeAda}+ tADA free for network fees${minFreeAda >= 8 ? " and 5 tADA collateral" : ""} — top up tADA and retry.`,
+    );
   return createClient({
     lucid,
     validator: cfg.validator,
@@ -152,14 +163,20 @@ export async function signAndSubmitPrepared(
       return hash;
     } catch (e) {
       const msg = String((e as { message?: string })?.message ?? e);
+      // Resubmit ONLY on missing-input rejections — those genuinely heal
+      // as nodes catch up. Collateral/value complaints WITHOUT missing
+      // inputs are structural (e.g. wallet too low on tADA) and repeat
+      // forever, so let them throw to the rebuild path instead.
       const transient =
-        isStaleUtxoError(e) ||
-        /3117|unknown UTxO|Could not submit transaction/i.test(msg);
+        /3117|unknown UTxO|BadInputsUTxO|TranslationLogicMissingInput|Could not submit transaction/i.test(
+          msg,
+        );
       const expired = lucid.currentSlot() > ttlSlot - 2;
       if (!transient || expired || Date.now() > giveUpAt) throw e;
       const delay = Math.min(5_000 * attempt, 15_000);
       console.warn(
-        `[submit] node view stale (attempt ${attempt}) — resubmitting same signed tx in ${delay / 1000}s`,
+        `[submit] rejected (attempt ${attempt}) — resubmitting same signed tx in ${delay / 1000}s:`,
+        msg.slice(0, 260),
       );
       await new Promise((r) => setTimeout(r, delay));
     }

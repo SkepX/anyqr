@@ -210,7 +210,7 @@ function MerchantInner() {
       const runOnce = async (api: Cip30Api): Promise<string> => {
         console.log(`[merchant] act:${kind} got api, building Lucid client`);
         const t1 = performance.now();
-        const client = await buildClient(api);
+        const client = await buildClient(api, 8);
         console.log(`[merchant] act:${kind} client built in ${Math.round(performance.now() - t1)}ms`);
         if (kind === "accept") {
           const randomBytes = new Uint8Array(64);
