@@ -38,6 +38,8 @@ type Status =
   | "confirming"
   | "paid"
   | "completed"
+  | "expired"
+  | "reclaimed"
   | "error";
 
 function PayInner() {
@@ -58,6 +60,9 @@ function PayInner() {
   const [seenOnChain, setSeenOnChain] = useState(false);
   const [balance, setBalance] = useState<string | null>(null);
   const lastReleasePoke = useRef(0);
+  // When the current order's place tx was initiated — drives the
+  // accept-window expiry check (restored across reloads).
+  const startedAtRef = useRef<number>(Date.now());
 
   // Restore in-flight order across page reloads / HMR — but only if the saved
   // status is genuinely mid-flight. Anything past markPaid (paid/completed)
@@ -80,18 +85,27 @@ function PayInner() {
         placeTx?: string;
         status?: Status;
         savedAt?: number;
+        startedAt?: number;
+        amount?: string;
       };
-      // Drop sessions older than 10 minutes (stale/dead).
-      const stale =
-        parsed.savedAt && Date.now() - parsed.savedAt > 10 * 60_000;
-      if (stale || !parsed.status || !inFlightStatuses.has(parsed.status)) {
+      const age = Date.now() - (parsed.startedAt ?? parsed.savedAt ?? 0);
+      if (!parsed.status || !inFlightStatuses.has(parsed.status)) {
         sessionStorage.removeItem(sessionKey);
         return;
       }
       if (parsed.orderId) {
         setOrderId(parsed.orderId);
         setPlaceTx(parsed.placeTx ?? null);
-        setStatus(parsed.status);
+        if (parsed.amount) setAmount(parsed.amount);
+        startedAtRef.current = parsed.startedAt ?? parsed.savedAt ?? Date.now();
+        // A "placed" order older than its 10-min accept window can never
+        // be accepted — surface the expired state (with the reclaim
+        // path) instead of resurrecting an eternal spinner.
+        if (parsed.status === "placed" && age > 10.5 * 60_000) {
+          setStatus("expired");
+        } else {
+          setStatus(parsed.status);
+        }
       }
     } catch {}
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -100,15 +114,22 @@ function PayInner() {
   useEffect(() => {
     if (typeof window === "undefined") return;
     if (!orderId) return;
-    if (status === "completed" || status === "paid") {
+    if (status === "completed" || status === "paid" || status === "reclaimed") {
       sessionStorage.removeItem(sessionKey);
       return;
     }
     sessionStorage.setItem(
       sessionKey,
-      JSON.stringify({ orderId, placeTx, status, savedAt: Date.now() }),
+      JSON.stringify({
+        orderId,
+        placeTx,
+        status,
+        amount,
+        savedAt: Date.now(),
+        startedAt: startedAtRef.current,
+      }),
     );
-  }, [orderId, placeTx, status, sessionKey]);
+  }, [orderId, placeTx, status, amount, sessionKey]);
 
   // Read connected wallet's tUSDM balance via Blockfrost.
   useEffect(() => {
@@ -150,8 +171,14 @@ function PayInner() {
   );
 
   const pay = async () => {
+    if (fiatAmt <= 0) {
+      setError("Enter the amount first.");
+      return;
+    }
     setStatus("placing");
     setError(null);
+    startedAtRef.current = Date.now();
+    setSeenOnChain(false);
     try {
       if (!conn) throw new Error("Connect a wallet first");
       const usdcUnits = BigInt(Math.round(fiatAmt * RATE_USDC_PER_INR * 1_000_000));
@@ -222,9 +249,24 @@ function PayInner() {
 
   useEffect(() => {
     if (!orderId) return;
-    if (status === "completed" || status === "error") return;
+    if (
+      status === "completed" ||
+      status === "error" ||
+      status === "expired" ||
+      status === "reclaimed"
+    )
+      return;
     let missCount = 0;
     const iv = setInterval(async () => {
+      // A Placed order past its 10-minute accept window can never be
+      // accepted — flip to the expired state (which offers reclaim).
+      if (
+        status === "placed" &&
+        Date.now() - startedAtRef.current > 10.5 * 60_000
+      ) {
+        setStatus("expired");
+        return;
+      }
       const res = await fetch("/api/orders/list");
       if (!res.ok) return;
       const { orders } = (await res.json()) as {
@@ -237,11 +279,19 @@ function PayInner() {
       };
       const me = orders.find((o) => o.orderId === orderId);
       if (!me) {
+        missCount += 1;
+        // Restored "placed" sessions can reference an order the list no
+        // longer returns (accept window lapsed → filtered out). Expire
+        // after ~15s of consecutive misses; fresh placements appear via
+        // the registry's pending fast-path within a poll or two.
+        if (status === "placed" && missCount >= 7) {
+          setStatus("expired");
+          return;
+        }
         if (!seenOnChain) return;
         // Don't jump to completed on a single miss — Blockfrost's indexer
         // often lags a beat behind block inclusion between state transitions.
         // Require 3 consecutive misses AND a registry-confirmed complete tx.
-        missCount += 1;
         if (missCount < 3) return;
         try {
           const r = await fetch(
@@ -292,6 +342,58 @@ function PayInner() {
     }, 2000);
     return () => clearInterval(iv);
   }, [orderId, status, seenOnChain]);
+
+  // Reclaim the escrowed tUSDM of an expired Placed order (the on-chain
+  // CancelUnaccepted path — user signature required, funds return to the
+  // buyer). Available any time while the order sits unaccepted.
+  const [reclaiming, setReclaiming] = useState(false);
+  const reclaim = async () => {
+    if (!orderId) return;
+    setReclaiming(true);
+    setError(null);
+    try {
+      const runOnce = async (api: Cip30Api): Promise<string> => {
+        const { cancelUnaccepted } = await import("@qrpay/sdk");
+        const client = await buildClient(api, 8);
+        const prepared = await cancelUnaccepted(client).prepare({ orderId });
+        if (prepared.isErr()) {
+          if (isDeadChannelError(prepared.error)) throw prepared.error;
+          throw new Error(String(prepared.error.message).slice(0, 400));
+        }
+        return await signAndSubmitPrepared(client, prepared.value, getApi);
+      };
+      const txHash = await withTxLock(async () => {
+        const api = await getApi();
+        if (!api) throw new Error("Wallet unavailable");
+        try {
+          return await withWalletKeepAlive(api, () => runOnce(api));
+        } catch (e) {
+          if (!isDeadChannelError(e)) throw e;
+          const fresh = await getApi({ fresh: true });
+          if (!fresh) throw e;
+          return await withWalletKeepAlive(fresh, () => runOnce(fresh));
+        }
+      });
+      console.log("[reclaim] tx", txHash);
+      setStatus("reclaimed");
+    } catch (e) {
+      const msg = String(e instanceof Error ? e.message : e);
+      // Already spent — either reclaimed earlier or accepted at the wire.
+      if (/no order with id|ORDER_NOT_FOUND/i.test(msg)) setStatus("reclaimed");
+      else setError(msg);
+    } finally {
+      setReclaiming(false);
+    }
+  };
+
+  const startOver = () => {
+    if (typeof window !== "undefined") sessionStorage.removeItem(sessionKey);
+    setOrderId(null);
+    setPlaceTx(null);
+    setError(null);
+    setSeenOnChain(false);
+    setStatus("review");
+  };
 
   const confirmReceived = async () => {
     console.log("[markPaid] click received, orderId =", orderId, "conn =", conn);
@@ -404,6 +506,9 @@ function PayInner() {
             error={error}
             onConfirmReceived={confirmReceived}
             onDone={() => router.push(`/home?ccy=${ccyCode}`)}
+            onReclaim={reclaim}
+            reclaiming={reclaiming}
+            onStartOver={startOver}
           />
         )}
       </div>
@@ -496,6 +601,9 @@ function PayStatus(props: {
   error: string | null;
   onConfirmReceived: () => void;
   onDone: () => void;
+  onReclaim: () => void;
+  reclaiming: boolean;
+  onStartOver: () => void;
 }) {
   const {
     status,
@@ -509,6 +617,9 @@ function PayStatus(props: {
     error,
     onConfirmReceived,
     onDone,
+    onReclaim,
+    reclaiming,
+    onStartOver,
   } = props;
 
   const meta: {
@@ -543,10 +654,18 @@ function PayStatus(props: {
         return {
           icon: <Hourglass />,
           title: "Confirmed",
-          sub: "Merchant claims tUSDM after the 5-minute dispute window.",
+          sub: "tUSDM releases to the merchant automatically after the 1-minute dispute window.",
         };
       case "completed":
         return { icon: <Check />, title: "Payment complete", sub: "tUSDM released to the merchant." };
+      case "expired":
+        return {
+          icon: <Warn />,
+          title: "No merchant picked this up",
+          sub: "The 10-minute accept window passed. Your tUSDM is still locked in escrow — reclaim it below, then try again.",
+        };
+      case "reclaimed":
+        return { icon: <Check />, title: "tUSDM reclaimed", sub: "Funds are back in your wallet." };
       case "error":
         return { icon: <Warn />, title: "Something went wrong", sub: error ?? "" };
       default:
@@ -618,7 +737,26 @@ function PayStatus(props: {
         </div>
       )}
 
-      {status === "completed" && (
+      {status === "expired" && (
+        <div className="flex flex-col gap-2 mb-6">
+          <button
+            onClick={onReclaim}
+            disabled={reclaiming}
+            className="btn btn-primary py-4 text-base"
+          >
+            {reclaiming ? "Reclaiming…" : "Reclaim tUSDM"}
+          </button>
+          <button
+            onClick={onStartOver}
+            disabled={reclaiming}
+            className="btn btn-ghost py-4 text-base"
+          >
+            Start over
+          </button>
+        </div>
+      )}
+
+      {(status === "completed" || status === "reclaimed") && (
         <button onClick={onDone} className="btn btn-primary w-full py-4 mb-6">
           Back home
         </button>
