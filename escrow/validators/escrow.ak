@@ -105,11 +105,14 @@ validator escrow {
         }
       }
 
-      // --- merchant claims USDC after dispute window --------------------
+      // --- USDC released to merchant after dispute window ----------------
+      // No signature required: anyone (in practice our server bot) may
+      // trigger the release, because the escrowed USDC can only go to
+      // the merchant and only after the dispute deadline. This is what
+      // makes the release automatic — no wallet popup for the merchant.
       Complete -> {
         expect order.status == Paid
         expect Some(m) = order.merchant
-        expect signed_by(signers, m)
         // must be after dispute_deadline
         expect lower_bound(tx.validity_range) > order.dispute_deadline
         // merchant must receive the full escrowed USDC

@@ -26,6 +26,11 @@ export interface OrderMeta {
   placeTxHash?: string;
   acceptTxHash?: string;
   merchantPkh?: string;
+  /** Merchant's full bech32 address — recorded at accept so the server
+   *  can release escrow to it without the merchant signing. */
+  merchantAddress?: string;
+  /** Set while the server-side release is being attempted (dedup guard). */
+  completingAt?: number;
   buyerConfirmedTxHash?: string;
   completeTxHash?: string;
   buyerConfirmed?: number;

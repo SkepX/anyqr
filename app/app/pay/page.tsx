@@ -1,5 +1,5 @@
 "use client";
-import { Suspense, useEffect, useMemo, useState } from "react";
+import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { COUNTRIES } from "../lib/countries";
 import {
@@ -57,6 +57,7 @@ function PayInner() {
   const [error, setError] = useState<string | null>(null);
   const [seenOnChain, setSeenOnChain] = useState(false);
   const [balance, setBalance] = useState<string | null>(null);
+  const lastReleasePoke = useRef(0);
 
   // Restore in-flight order across page reloads / HMR — but only if the saved
   // status is genuinely mid-flight. Anything past markPaid (paid/completed)
@@ -231,6 +232,7 @@ function PayInner() {
           orderId: string;
           status: string;
           merchantPaid?: number | null;
+          disputeDeadline?: number;
         }>;
       };
       const me = orders.find((o) => o.orderId === orderId);
@@ -270,6 +272,22 @@ function PayInner() {
         (status === "merchant_paid" || status === "accepted" || status === "confirming")
       ) {
         setStatus("paid");
+      }
+      // Poke the server-side release once the dispute window closes, so
+      // the escrow settles even if the merchant closed their tab. The
+      // endpoint is idempotent; throttle to one poke per 30s.
+      if (
+        me.status === "Paid" &&
+        me.disputeDeadline &&
+        Date.now() > me.disputeDeadline + 2_000 &&
+        Date.now() - lastReleasePoke.current > 30_000
+      ) {
+        lastReleasePoke.current = Date.now();
+        void fetch("/api/orders/auto-complete", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ orderId }),
+        }).catch(() => {});
       }
     }, 2000);
     return () => clearInterval(iv);

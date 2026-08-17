@@ -26,7 +26,7 @@ const FAIR_RATE_INR_PER_USDC = 97.65; // "fair" reference rate
 // old wallet API handle would already be invalidated by the extension,
 // producing a "RemoteApiShutdownError" that surfaces as the red error
 // card on the merchant page.
-const AUTO_COMPLETE_ATTEMPTED = new Set<string>();
+const AUTO_COMPLETE_ATTEMPTED = new Map<string, number>();
 
 // Cross-lambda meta cache. Vercel's file-based registry doesn't
 // propagate across lambda instances, so a poll that hits a "cold"
@@ -298,6 +298,7 @@ function MerchantInner() {
           kind,
           txHash,
           ...(kind === "accept" && merchantPkh ? { merchantPkh } : {}),
+          ...(kind === "accept" && conn ? { merchantAddress: conn.address } : {}),
         }),
       });
       setTimeout(load, 2500);
@@ -392,16 +393,32 @@ function MerchantInner() {
     });
   }, [orders]);
 
-  // Auto-fire complete on any Paid order past its dispute deadline.
-  // Guarded by a module-level Set so a remount can't retry the same
-  // order (which would use a stale wallet handle and error out).
+  // Poke the server-side release for any Paid order past its dispute
+  // deadline. The server signs with the admin hot wallet — no merchant
+  // wallet popup. Idempotent server-side; throttled to one poke per
+  // order per 30s here so polling doesn't spam the lambda.
   useEffect(() => {
     const now = Date.now();
     for (const o of paid) {
-      if (AUTO_COMPLETE_ATTEMPTED.has(o.orderId)) continue;
-      if (now <= o.disputeDeadline) continue;
-      AUTO_COMPLETE_ATTEMPTED.add(o.orderId);
-      void act("complete", o, true);
+      if (now <= o.disputeDeadline + 2_000) continue;
+      const last = AUTO_COMPLETE_ATTEMPTED.get(o.orderId) ?? 0;
+      if (now - last < 30_000) continue;
+      AUTO_COMPLETE_ATTEMPTED.set(o.orderId, now);
+      void fetch("/api/orders/auto-complete", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ orderId: o.orderId }),
+      })
+        .then(async (r) => {
+          const j = (await r.json()) as { txHash?: string; error?: string };
+          if (j.txHash) {
+            console.log(`[merchant] auto-release done tx=${j.txHash.slice(0, 10)}…`);
+            setTimeout(load, 2000);
+          } else if (j.error) {
+            console.warn("[merchant] auto-release:", j.error);
+          }
+        })
+        .catch(() => {});
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [paid.map((o) => o.orderId + ":" + o.disputeDeadline).join(",")]);
@@ -563,11 +580,7 @@ function MerchantInner() {
           )}
           {paid.map((o) => (
             <OrderRow key={o.orderId} o={o}>
-              <CompleteButton
-                o={o}
-                busy={!!busy[o.orderId]}
-                onClick={() => act("complete", o)}
-              />
+              <CompleteButton o={o} />
             </OrderRow>
           ))}
         </Section>
@@ -741,15 +754,7 @@ function TxHashes({ o }: { o: WireOrder }) {
   );
 }
 
-function CompleteButton({
-  o,
-  busy,
-  onClick,
-}: {
-  o: WireOrder;
-  busy: boolean;
-  onClick: () => void;
-}) {
+function CompleteButton({ o }: { o: WireOrder }) {
   const [now, setNow] = useState(Date.now());
   useEffect(() => {
     const iv = setInterval(() => setNow(Date.now()), 1000);
@@ -776,12 +781,15 @@ function CompleteButton({
     );
   }
   return (
-    <button onClick={onClick} disabled={busy} className="btn btn-primary">
-      <span className="inline-flex items-center gap-2">
-        <span className="inline-block w-3.5 h-3.5 rounded-full border-2 border-black border-t-transparent animate-spin" />
-        Claiming…
-      </span>
-    </button>
+    <div className="text-right">
+      <div className="inline-flex items-center gap-2 text-sm text-[color:var(--text-muted)]">
+        <span className="inline-block w-3.5 h-3.5 rounded-full border-2 border-current border-t-transparent animate-spin" />
+        Releasing…
+      </div>
+      <div className="text-xs text-[color:var(--accent-strong)] mt-0.5">
+        +{usdc} tUSDM
+      </div>
+    </div>
   );
 }
 

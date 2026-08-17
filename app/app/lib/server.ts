@@ -3,12 +3,14 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   Blockfrost,
+  Data,
   Lucid,
   paymentCredentialOf,
   validatorToAddress,
   type LucidEvolution,
 } from "@lucid-evolution/lucid";
 import {
+  Action,
   createClient,
   type QrpayClient,
 } from "@qrpay/sdk";
@@ -80,6 +82,49 @@ export function serverConfig() {
     scriptAddress: validatorToAddress("Preprod", validator),
     network: "Preprod" as const,
   };
+}
+
+/**
+ * Server-side escrow release: after the dispute window, spend the Paid
+ * escrow UTxO and pay the USDC to the merchant's address, signed by the
+ * admin hot wallet (fees + collateral come from it). The validator's
+ * Complete branch requires no merchant signature — only that the funds
+ * land at the merchant's payment key after the deadline — which is what
+ * makes the release fully automatic (no wallet popup).
+ */
+export async function adminCompleteOrder(
+  orderId: string,
+  merchantAddress: string,
+): Promise<string> {
+  const seed = assertEnv("ADMIN_SEED");
+  const client = await readOnly();
+  const lucid = client.cfg.lucid;
+  lucid.selectWallet.fromSeed(seed);
+
+  const r = await client.findOrderById(orderId);
+  if (r.isErr()) throw new Error(`order not found on-chain: ${orderId}`);
+  const order = r.value;
+  if (order.datum.status !== "Paid")
+    throw new Error(`order not in Paid state: ${String(order.datum.status)}`);
+  const deadline = Number(order.datum.dispute_deadline);
+  if (Date.now() <= deadline + 2_000)
+    throw new Error("dispute window still open");
+  const merchantPkh = order.datum.merchant;
+  if (!merchantPkh || paymentCredentialOf(merchantAddress).hash !== merchantPkh)
+    throw new Error("merchantAddress does not match the order's merchant");
+
+  const tx = await lucid
+    .newTx()
+    .collectFrom([order.utxo], Data.to("Complete", Action))
+    .attach.SpendingValidator(client.cfg.validator)
+    .pay.ToAddress(merchantAddress, {
+      [client.usdcUnit]: order.datum.usdc_amount,
+    })
+    .validFrom(deadline + 1_000)
+    .validTo(Date.now() + 5 * 60_000)
+    .complete();
+  const signed = await tx.sign.withWallet().complete();
+  return await signed.submit();
 }
 
 export function toWireOrder(o: {
