@@ -7,6 +7,7 @@ import { RoleGuard } from "../components/RoleGuard";
 import {
   buildClient,
   isStaleUtxoError,
+  refreshWalletView,
   signAndSubmitPrepared,
   withTxLock,
 } from "../lib/client-sdk";
@@ -246,6 +247,12 @@ function MerchantInner() {
               intervalMs: 3_000,
             });
           }
+          // Re-snapshot the wallet's confirmed coins right before
+          // building: the buyer's place tx (same wallet in these tests)
+          // confirms DURING the wait above and consumes coins the
+          // pre-wait snapshot still lists — a build on the stale
+          // snapshot references dead inputs that every node rejects.
+          await refreshWalletView(client.cfg.lucid);
           console.log(`[merchant] act:accept building tx`);
           const t2 = performance.now();
           const prepared = await acceptOrder(client).prepare({

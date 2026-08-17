@@ -42,13 +42,9 @@ export async function buildClient(api: Cip30Api, minFreeAda = 3) {
   // optimistic one. Lace's getUtxos() includes change from txs still in
   // the mempool; building on a not-yet-confirmed output gets rejected
   // with BadInputsUTxO by any node that hasn't seen the parent tx.
-  try {
-    const addr = await lucid.wallet().address();
-    const confirmed = await lucid.utxosAt(addr);
-    if (confirmed.length > 0) lucid.overrideUTxOs(confirmed);
-  } catch {
-    // Blockfrost hiccup — fall back to the wallet's own UTxO view.
-  }
+  // MANDATORY — a silent fallback to the wallet view produced txs
+  // spending phantom coins. Retry, then fail loud.
+  await refreshWalletView(lucid);
   const utxos = await lucid.wallet().getUtxos();
   let lovelace = BigInt(0);
   for (const u of utxos) lovelace += u.assets.lovelace ?? BigInt(0);
@@ -66,6 +62,34 @@ export async function buildClient(api: Cip30Api, minFreeAda = 3) {
 }
 
 type BuiltClient = Awaited<ReturnType<typeof buildClient>>;
+
+/** (Re)load the wallet's CONFIRMED coins from Blockfrost into the Lucid
+ *  instance. Must be called again right before building whenever time
+ *  has passed since the client was created (e.g. after waiting for an
+ *  order to index): with one wallet playing both roles, the buyer's
+ *  place tx can spend a coin DURING that wait, and a build from the
+ *  stale snapshot then references a permanently-consumed input that
+ *  every node rejects. */
+export async function refreshWalletView(
+  lucid: BuiltClient["cfg"]["lucid"],
+): Promise<void> {
+  const addr = await lucid.wallet().address();
+  for (let attempt = 1; ; attempt++) {
+    try {
+      const confirmed = await lucid.utxosAt(addr);
+      if (confirmed.length > 0) lucid.overrideUTxOs(confirmed);
+      else
+        console.warn("[buildClient] confirmed wallet view is empty — using wallet's own view");
+      return;
+    } catch (e) {
+      if (attempt >= 3)
+        throw new Error(
+          "Couldn't fetch your wallet's confirmed coins (chain API busy) — wait a few seconds and retry.",
+        );
+      await new Promise((r) => setTimeout(r, 2_000));
+    }
+  }
+}
 
 /** Every awaited network/wallet step gets a hard deadline — a stalled
  *  connection (a sick Blockfrost node holding the socket open, a wedged
