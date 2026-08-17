@@ -115,6 +115,17 @@ export function useWalletConnect(): WalletState {
   return ctx;
 }
 
+// Cache the enabled CIP-30 api handle per wallet key. Some wallets
+// (Lace especially) treat each `enable()` call as a fresh session
+// that invalidates prior handles — if two `enable()` calls happen
+// close together (e.g. concurrent signings), the older channel dies
+// mid-flight and Lucid surfaces "RemoteApiShutdownError". Caching
+// the handle guarantees we only ever hold one live session.
+const enabledApis = new Map<string, Promise<Cip30Api>>();
+function resetEnabledApi(key: string) {
+  enabledApis.delete(key);
+}
+
 function useWalletConnectInternal(): WalletState {
   const [conn, setConn] = useState<Connection | null>(null);
   const [installed, setInstalled] = useState<DetectedWallet[]>([]);
@@ -174,7 +185,9 @@ function useWalletConnectInternal(): WalletState {
           setRestoring(false);
           return;
         }
-        const api = await inj.enable();
+        const enablePromise = inj.enable();
+        enabledApis.set(parsed.key, enablePromise);
+        const api = await enablePromise;
         if (cancelled) return;
         const net = await api.getNetworkId();
         const addr = await getBech32Address(api, net);
@@ -196,7 +209,11 @@ function useWalletConnectInternal(): WalletState {
     try {
       const inj = readInjected()[walletKey];
       if (!inj) throw new Error(`${walletKey} not installed`);
-      const api = await inj.enable();
+      // Fresh connect — drop any stale cached api first.
+      resetEnabledApi(walletKey);
+      const enablePromise = inj.enable();
+      enabledApis.set(walletKey, enablePromise);
+      const api = await enablePromise;
       const net = await api.getNetworkId();
       const addr = await getBech32Address(api, net);
       const conn = { key: walletKey, address: addr, networkId: net };
@@ -204,6 +221,7 @@ function useWalletConnectInternal(): WalletState {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(conn));
       return conn;
     } catch (e) {
+      resetEnabledApi(walletKey);
       setError(String(e instanceof Error ? e.message : e));
       throw e;
     } finally {
@@ -212,16 +230,25 @@ function useWalletConnectInternal(): WalletState {
   }, []);
 
   const disconnect = useCallback(() => {
+    if (conn) resetEnabledApi(conn.key);
     setConn(null);
     if (typeof window !== "undefined") localStorage.removeItem(STORAGE_KEY);
-  }, []);
+  }, [conn]);
 
-  /** Return a fresh CIP-30 API handle for the currently-connected wallet. */
+  /** Return a cached CIP-30 API handle for the currently-connected wallet.
+   *  See `enabledApis` above for why we never call `enable()` twice. */
   const getApi = useCallback(async (): Promise<Cip30Api | null> => {
     if (!conn) return null;
     const inj = readInjected()[conn.key];
     if (!inj) return null;
-    return inj.enable();
+    let p = enabledApis.get(conn.key);
+    if (!p) {
+      p = inj.enable();
+      enabledApis.set(conn.key, p);
+      // If enable fails, drop the cache so the next call retries fresh.
+      p.catch(() => resetEnabledApi(conn.key));
+    }
+    return p;
   }, [conn]);
 
   return useMemo(

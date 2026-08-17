@@ -1,5 +1,5 @@
 "use client";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import QRCode from "qrcode";
 import Link from "next/link";
 import { WalletButton } from "../components/WalletButton";
@@ -34,6 +34,7 @@ function MerchantInner() {
   const [busy, setBusy] = useState<Record<string, boolean>>({});
   const [error, setError] = useState<string | null>(null);
   const [pendingAccepts, setPendingAccepts] = useState<Record<string, WireOrder>>({});
+  const emptyStreak = useRef(0);
 
   // Derive merchant pkh from connected wallet
   useEffect(() => {
@@ -86,13 +87,26 @@ function MerchantInner() {
   }, [conn]);
 
   const load = useCallback(async () => {
-    const res = await fetch("/api/orders/list", { cache: "no-store" });
-    if (!res.ok) return;
-    const { orders: next } = (await res.json()) as { orders: WireOrder[] };
-    // Skip the state update if the payload is byte-identical to the last
-    // poll — prevents a re-render (and the resulting visual "blink") every
-    // 2 seconds when nothing on-chain changed.
+    let next: WireOrder[];
+    try {
+      const res = await fetch("/api/orders/list", { cache: "no-store" });
+      if (!res.ok) return;
+      const j = (await res.json()) as { orders: WireOrder[] };
+      next = j.orders;
+    } catch {
+      return; // network hiccup — don't touch state
+    }
     setOrders((prev) => {
+      // Sticky against transient empty responses: if we had orders and the
+      // server now says none, ignore it once. Blockfrost + Vercel cold hits
+      // occasionally return empty for a single tick — writing [] here is
+      // what causes the sections to "disappear and reappear".
+      if (next.length === 0 && prev.length > 0) {
+        emptyStreak.current += 1;
+        if (emptyStreak.current < 3) return prev;
+      } else {
+        emptyStreak.current = 0;
+      }
       if (
         prev.length === next.length &&
         prev.every(
