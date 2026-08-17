@@ -335,49 +335,56 @@ function MerchantInner() {
   };
 
   const markMerchantPaid = async (orderId: string) => {
-    setBusy((b) => ({ ...b, [orderId]: true }));
     setError(null);
-    // Hard client-side timeout: if the network hangs, at least clear
-    // the spinner and surface the failure rather than leaving the
-    // button stuck on "Sending…" forever. 15s — the route may retry
-    // once internally on a cold registry read.
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 15000);
-    try {
-      const res = await fetch("/api/orders/merchant-paid", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ orderId }),
-        signal: controller.signal,
-      });
-      if (!res.ok) throw new Error(`merchant-paid failed: ${res.status}`);
-      const paidAt = Date.now();
-      // Write through the meta cache too — a poll answered by a lambda
-      // with a stale registry would otherwise return merchantPaid=null
-      // and flip the button back to "Pay this now".
-      const cached = META_CACHE.get(orderId);
+    // Optimistic-first: flip the card to "waiting for buyer" on the
+    // FIRST press, then land the flag server-side with retries in the
+    // background. Registry writes can be slow or race across lambdas —
+    // a press must never look like a no-op.
+    const paidAt = Date.now();
+    const before = META_CACHE.get(orderId);
+    const seed = (merchantPaid: number | null) => {
       META_CACHE.set(orderId, {
-        paymentAddress: cached?.paymentAddress ?? null,
-        payeeName: cached?.payeeName ?? null,
-        buyerConfirmed: cached?.buyerConfirmed ?? null,
-        merchantPaid: paidAt,
-        placeTxHash: cached?.placeTxHash ?? null,
-        acceptTxHash: cached?.acceptTxHash ?? null,
-        buyerConfirmedTxHash: cached?.buyerConfirmedTxHash ?? null,
-        completeTxHash: cached?.completeTxHash ?? null,
+        paymentAddress: before?.paymentAddress ?? null,
+        payeeName: before?.payeeName ?? null,
+        buyerConfirmed: before?.buyerConfirmed ?? null,
+        merchantPaid,
+        placeTxHash: before?.placeTxHash ?? null,
+        acceptTxHash: before?.acceptTxHash ?? null,
+        buyerConfirmedTxHash: before?.buyerConfirmedTxHash ?? null,
+        completeTxHash: before?.completeTxHash ?? null,
       });
       setOrders((prev) =>
-        prev.map((o) =>
-          o.orderId === orderId ? { ...o, merchantPaid: paidAt } : o,
-        ),
+        prev.map((o) => (o.orderId === orderId ? { ...o, merchantPaid } : o)),
       );
-      void load();
-    } catch (e) {
-      setError(String(e instanceof Error ? e.message : e));
-    } finally {
-      clearTimeout(timeout);
-      setBusy((b) => ({ ...b, [orderId]: false }));
+    };
+    seed(paidAt);
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 15000);
+      try {
+        const res = await fetch("/api/orders/merchant-paid", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ orderId }),
+          signal: controller.signal,
+        });
+        clearTimeout(timeout);
+        if (res.ok) {
+          console.log(`[merchant-paid] recorded (attempt ${attempt})`);
+          void load();
+          return;
+        }
+        console.warn(`[merchant-paid] attempt ${attempt}: status ${res.status}`);
+      } catch (e) {
+        clearTimeout(timeout);
+        console.warn(`[merchant-paid] attempt ${attempt} failed:`, e);
+      }
+      await new Promise((r) => setTimeout(r, 2000));
     }
+    // Every attempt failed — revert so the buyer isn't left waiting on a
+    // flag that never landed.
+    seed(before?.merchantPaid ?? null);
+    setError("Couldn't record ‘I’ve paid’ — check your connection and press once more.");
   };
 
   // Merge optimistic accepts with authoritative on-chain data
@@ -439,6 +446,26 @@ function MerchantInner() {
           const j = (await r.json()) as { txHash?: string; error?: string };
           if (j.txHash) {
             console.log(`[merchant] auto-release done tx=${j.txHash.slice(0, 10)}…`);
+            // Flip the row to "Released ✓" immediately — polls can lag
+            // the registry/chain by up to a minute, and the release is
+            // already a fact.
+            const txHash = j.txHash;
+            const cached = META_CACHE.get(o.orderId);
+            META_CACHE.set(o.orderId, {
+              paymentAddress: cached?.paymentAddress ?? null,
+              payeeName: cached?.payeeName ?? null,
+              buyerConfirmed: cached?.buyerConfirmed ?? null,
+              merchantPaid: cached?.merchantPaid ?? null,
+              placeTxHash: cached?.placeTxHash ?? null,
+              acceptTxHash: cached?.acceptTxHash ?? null,
+              buyerConfirmedTxHash: cached?.buyerConfirmedTxHash ?? null,
+              completeTxHash: txHash,
+            });
+            setOrders((prev) =>
+              prev.map((x) =>
+                x.orderId === o.orderId ? { ...x, completeTxHash: txHash } : x,
+              ),
+            );
             setTimeout(load, 2000);
           } else if (j.error) {
             console.warn("[merchant] auto-release:", j.error);
