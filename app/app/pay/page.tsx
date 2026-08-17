@@ -93,19 +93,19 @@ function PayInner() {
         sessionStorage.removeItem(sessionKey);
         return;
       }
+      // A "placed" order older than its 10-min accept window can never
+      // be accepted — drop the zombie session so the amount form shows.
+      // The locked-funds banner (chain-driven) offers the reclaim path.
+      if (parsed.status === "placed" && age > 10.5 * 60_000) {
+        sessionStorage.removeItem(sessionKey);
+        return;
+      }
       if (parsed.orderId) {
         setOrderId(parsed.orderId);
         setPlaceTx(parsed.placeTx ?? null);
         if (parsed.amount) setAmount(parsed.amount);
         startedAtRef.current = parsed.startedAt ?? parsed.savedAt ?? Date.now();
-        // A "placed" order older than its 10-min accept window can never
-        // be accepted — surface the expired state (with the reclaim
-        // path) instead of resurrecting an eternal spinner.
-        if (parsed.status === "placed" && age > 10.5 * 60_000) {
-          setStatus("expired");
-        } else {
-          setStatus(parsed.status);
-        }
+        setStatus(parsed.status);
       }
     } catch {}
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -259,12 +259,13 @@ function PayInner() {
     let missCount = 0;
     const iv = setInterval(async () => {
       // A Placed order past its 10-minute accept window can never be
-      // accepted — flip to the expired state (which offers reclaim).
+      // accepted — reset to the amount form; the locked-funds banner
+      // offers the reclaim path.
       if (
         status === "placed" &&
         Date.now() - startedAtRef.current > 10.5 * 60_000
       ) {
-        setStatus("expired");
+        startOver();
         return;
       }
       const res = await fetch("/api/orders/list");
@@ -285,7 +286,7 @@ function PayInner() {
         // after ~15s of consecutive misses; fresh placements appear via
         // the registry's pending fast-path within a poll or two.
         if (status === "placed" && missCount >= 7) {
-          setStatus("expired");
+          startOver();
           return;
         }
         if (!seenOnChain) return;
@@ -343,19 +344,65 @@ function PayInner() {
     return () => clearInterval(iv);
   }, [orderId, status, seenOnChain]);
 
+  // Expired Placed orders belonging to this wallet, straight from the
+  // chain — their tUSDM sits locked until reclaimed. Rendered as a
+  // banner above the amount form; never blocks a new payment.
+  interface LockedOrder {
+    orderId: string;
+    fiatAmount: string;
+    fiatCurrency: string;
+    usdcAmount: string;
+  }
+  const [locked, setLocked] = useState<LockedOrder[]>([]);
+  const [reclaimNote, setReclaimNote] = useState<string | null>(null);
+  useEffect(() => {
+    if (status !== "review" || !conn) {
+      setLocked([]);
+      return;
+    }
+    let live = true;
+    const tick = async () => {
+      try {
+        const r = await fetch(
+          `/api/orders/mine?address=${encodeURIComponent(conn.address)}`,
+        );
+        if (!r.ok) return;
+        const { orders } = (await r.json()) as {
+          orders: Array<LockedOrder & { status: string; acceptDeadline?: number }>;
+        };
+        if (!live) return;
+        setLocked(
+          orders.filter(
+            (o) =>
+              o.status === "Placed" &&
+              (o.acceptDeadline ?? 0) < Date.now() - 5_000,
+          ),
+        );
+      } catch {}
+    };
+    void tick();
+    const iv = setInterval(tick, 15_000);
+    return () => {
+      live = false;
+      clearInterval(iv);
+    };
+  }, [status, conn]);
+
   // Reclaim the escrowed tUSDM of an expired Placed order (the on-chain
   // CancelUnaccepted path — user signature required, funds return to the
   // buyer). Available any time while the order sits unaccepted.
   const [reclaiming, setReclaiming] = useState(false);
-  const reclaim = async () => {
-    if (!orderId) return;
+  const reclaim = async (targetOrderId: string) => {
     setReclaiming(true);
     setError(null);
+    setReclaimNote(null);
     try {
       const runOnce = async (api: Cip30Api): Promise<string> => {
         const { cancelUnaccepted } = await import("@qrpay/sdk");
         const client = await buildClient(api, 8);
-        const prepared = await cancelUnaccepted(client).prepare({ orderId });
+        const prepared = await cancelUnaccepted(client).prepare({
+          orderId: targetOrderId,
+        });
         if (prepared.isErr()) {
           if (isDeadChannelError(prepared.error)) throw prepared.error;
           throw new Error(String(prepared.error.message).slice(0, 400));
@@ -375,12 +422,15 @@ function PayInner() {
         }
       });
       console.log("[reclaim] tx", txHash);
-      setStatus("reclaimed");
+      setLocked((prev) => prev.filter((l) => l.orderId !== targetOrderId));
+      setReclaimNote("Reclaimed ✓ — tUSDM is on its way back to your wallet.");
     } catch (e) {
       const msg = String(e instanceof Error ? e.message : e);
-      // Already spent — either reclaimed earlier or accepted at the wire.
-      if (/no order with id|ORDER_NOT_FOUND/i.test(msg)) setStatus("reclaimed");
-      else setError(msg);
+      // Already spent — reclaimed earlier or accepted at the wire.
+      if (/no order with id|ORDER_NOT_FOUND/i.test(msg)) {
+        setLocked((prev) => prev.filter((l) => l.orderId !== targetOrderId));
+        setReclaimNote("That order was already settled.");
+      } else setError(msg);
     } finally {
       setReclaiming(false);
     }
@@ -480,6 +530,44 @@ function PayInner() {
           <WalletButton />
         </div>
 
+        {status === "review" && (locked.length > 0 || reclaimNote) && (
+          <div className="mb-6 p-4 rounded border border-[color:var(--border)]">
+            <div className="text-sm font-medium mb-1">
+              Locked tUSDM from earlier orders
+            </div>
+            {locked.map((l) => (
+              <div
+                key={l.orderId}
+                className="flex items-center justify-between gap-3 py-1.5"
+              >
+                <span className="text-sm text-[color:var(--text-muted)]">
+                  {ccy.symbol}
+                  {(Number(l.fiatAmount) / 100).toFixed(2)} (
+                  {(Number(l.usdcAmount) / 1_000_000).toFixed(3)} tUSDM) — no
+                  merchant accepted in time
+                </span>
+                <button
+                  onClick={() => reclaim(l.orderId)}
+                  disabled={reclaiming}
+                  className="btn btn-primary text-sm px-3 py-1.5 shrink-0"
+                >
+                  {reclaiming ? "Reclaiming…" : "Reclaim"}
+                </button>
+              </div>
+            ))}
+            {reclaimNote && (
+              <div className="text-sm text-[color:var(--accent-strong)] mt-1">
+                {reclaimNote}
+              </div>
+            )}
+            {error && (
+              <div className="text-xs text-[color:var(--warning)] mt-1 break-all">
+                {error}
+              </div>
+            )}
+          </div>
+        )}
+
         {status === "review" ? (
           <Review
             payee={pn}
@@ -506,9 +594,6 @@ function PayInner() {
             error={error}
             onConfirmReceived={confirmReceived}
             onDone={() => router.push(`/home?ccy=${ccyCode}`)}
-            onReclaim={reclaim}
-            reclaiming={reclaiming}
-            onStartOver={startOver}
           />
         )}
       </div>
@@ -601,9 +686,6 @@ function PayStatus(props: {
   error: string | null;
   onConfirmReceived: () => void;
   onDone: () => void;
-  onReclaim: () => void;
-  reclaiming: boolean;
-  onStartOver: () => void;
 }) {
   const {
     status,
@@ -617,9 +699,6 @@ function PayStatus(props: {
     error,
     onConfirmReceived,
     onDone,
-    onReclaim,
-    reclaiming,
-    onStartOver,
   } = props;
 
   const meta: {
@@ -733,25 +812,6 @@ function PayStatus(props: {
           </button>
           <button className="btn btn-ghost py-4 text-base text-sm" disabled>
             No, dispute (soon)
-          </button>
-        </div>
-      )}
-
-      {status === "expired" && (
-        <div className="flex flex-col gap-2 mb-6">
-          <button
-            onClick={onReclaim}
-            disabled={reclaiming}
-            className="btn btn-primary py-4 text-base"
-          >
-            {reclaiming ? "Reclaiming…" : "Reclaim tUSDM"}
-          </button>
-          <button
-            onClick={onStartOver}
-            disabled={reclaiming}
-            className="btn btn-ghost py-4 text-base"
-          >
-            Start over
           </button>
         </div>
       )}
