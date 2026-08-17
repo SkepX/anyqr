@@ -123,9 +123,23 @@ function MerchantInner() {
   }, []);
 
   useEffect(() => {
-    load();
-    const iv = setInterval(load, 2000);
-    return () => clearInterval(iv);
+    // Self-scheduling loop — waits for the previous fetch to finish
+    // before starting the next. setInterval at 2s would overlap with
+    // a ~1.7s Blockfrost call and let out-of-order responses land,
+    // which is what was causing the sections to blank out.
+    let stop = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const loop = async () => {
+      if (stop) return;
+      await load();
+      if (stop) return;
+      timer = setTimeout(loop, 4000);
+    };
+    void loop();
+    return () => {
+      stop = true;
+      if (timer) clearTimeout(timer);
+    };
   }, [load]);
 
   // Sign accept/complete client-side with connected wallet.
@@ -299,33 +313,39 @@ function MerchantInner() {
   >([]);
   useEffect(() => {
     if (!merchantPkh) return;
-    let live = true;
-    const tick = () =>
-      fetch(`/api/orders/merchant-mine?pkh=${merchantPkh}`)
-        .then((r) => (r.ok ? r.json() : null))
-        .then((d) => {
-          if (!live || !d) return;
-          setMerchantOrders((prev) => {
-            const next = d.orders as typeof prev;
-            if (
-              prev.length === next.length &&
-              prev.every(
-                (p, i) =>
-                  p.orderId === next[i].orderId &&
-                  p.fiatAmount === next[i].fiatAmount,
-              )
-            ) {
-              return prev;
-            }
-            return next;
-          });
-        })
-        .catch(() => {});
-    tick();
-    const iv = setInterval(tick, 3000);
+    let stop = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const tick = async () => {
+      if (stop) return;
+      try {
+        const r = await fetch(`/api/orders/merchant-mine?pkh=${merchantPkh}`);
+        if (stop || !r.ok) return;
+        const d = await r.json();
+        if (stop) return;
+        setMerchantOrders((prev) => {
+          const next = d.orders as typeof prev;
+          if (
+            prev.length === next.length &&
+            prev.every(
+              (p, i) =>
+                p.orderId === next[i].orderId &&
+                p.fiatAmount === next[i].fiatAmount,
+            )
+          ) {
+            return prev;
+          }
+          return next;
+        });
+      } catch {
+        /* ignore */
+      } finally {
+        if (!stop) timer = setTimeout(tick, 6000);
+      }
+    };
+    void tick();
     return () => {
-      live = false;
-      clearInterval(iv);
+      stop = true;
+      if (timer) clearTimeout(timer);
     };
   }, [merchantPkh]);
 
