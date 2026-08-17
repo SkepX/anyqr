@@ -147,37 +147,52 @@ export async function signAndSubmitPrepared(
   const ttlRaw = signed.toTransaction().body().ttl();
   const ttlSlot = ttlRaw === undefined ? Number.POSITIVE_INFINITY : Number(ttlRaw);
   const giveUpAt = Date.now() + 240_000;
+  // Hold the tx queue (not the caller) until the tx lands in a block,
+  // so the next build sees its inputs spent and its change available.
+  // Capped so an outage can't wedge the queue forever.
+  const holdQueueUntilConfirmed = (hash: string) =>
+    extendTxLock(() =>
+      Promise.race([
+        lucid.awaitTx(hash, 3_000),
+        new Promise((r) => setTimeout(r, 120_000)),
+      ]),
+    );
+  // "Node doesn't know these inputs" in either dialect. Individual
+  // Blockfrost submit nodes have been observed MINUTES behind their own
+  // query API (session-sticky LB), so a rejection from one door says
+  // nothing about the other.
+  const isMissingInputMsg = (m: string) =>
+    /3117|unknown UTxO|BadInputsUTxO|TranslationLogicMissingInput|InsufficientCollateral|IncorrectTotalCollateralField|NoCollateralInputs|Could not submit transaction/i.test(
+      m,
+    );
   for (let attempt = 1; ; attempt++) {
     try {
       const hash = await provider.submitTx(cbor);
-      // Hold the tx queue (not this caller) until the tx lands in a
-      // block, so the next build sees its inputs spent and its change
-      // available. Cap the wait so a Blockfrost outage can't wedge the
-      // queue forever.
-      extendTxLock(() =>
-        Promise.race([
-          lucid.awaitTx(hash, 3_000),
-          new Promise((r) => setTimeout(r, 120_000)),
-        ]),
-      );
+      holdQueueUntilConfirmed(hash);
       return hash;
     } catch (e) {
       const msg = String((e as { message?: string })?.message ?? e);
-      // Resubmit ONLY on missing-input rejections — those genuinely heal
-      // as nodes catch up. Collateral/value complaints WITHOUT missing
-      // inputs are structural (e.g. wallet too low on tADA) and repeat
-      // forever, so let them throw to the rebuild path instead.
-      const transient =
-        /3117|unknown UTxO|BadInputsUTxO|TranslationLogicMissingInput|Could not submit transaction/i.test(
-          msg,
-        );
       const expired = lucid.currentSlot() > ttlSlot - 2;
-      if (!transient || expired || Date.now() > giveUpAt) throw e;
-      const delay = Math.min(5_000 * attempt, 15_000);
+      if (!isMissingInputMsg(msg) || expired || Date.now() > giveUpAt) throw e;
       console.warn(
-        `[submit] rejected (attempt ${attempt}) — resubmitting same signed tx in ${delay / 1000}s:`,
+        `[submit] provider rejected (attempt ${attempt}):`,
         msg.slice(0, 260),
       );
+      // Second, independent door to the mempool: the wallet's own
+      // backend. Same signed cbor, no new signature. Whichever node is
+      // actually current accepts the tx.
+      try {
+        const hash = await signed.submit();
+        console.log(`[submit] wallet path accepted the tx`);
+        holdQueueUntilConfirmed(hash);
+        return hash;
+      } catch (e2) {
+        console.warn(
+          `[submit] wallet path also rejected:`,
+          String((e2 as { message?: string })?.message ?? e2).slice(0, 200),
+        );
+      }
+      const delay = Math.min(5_000 * attempt, 15_000);
       await new Promise((r) => setTimeout(r, delay));
     }
   }
