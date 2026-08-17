@@ -226,21 +226,37 @@ function MerchantInner() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [paid.map((o) => o.orderId + ":" + o.disputeDeadline).join(",")]);
 
-  // Earnings = 2% of the fiat value of orders this merchant has claimed OR
-  // is currently mid-cycle on. Sum in INR.
+  // Earnings roll in from BOTH mid-flight orders (on-chain) and settled
+  // orders (registry entries whose UTXO is gone). We poll a per-merchant
+  // endpoint that merges the two, keyed by the merchant's pkh.
+  const [merchantOrders, setMerchantOrders] = useState<
+    Array<{ orderId: string; fiatAmount: string; fiatCurrency: string }>
+  >([]);
+  useEffect(() => {
+    if (!merchantPkh) return;
+    let live = true;
+    const tick = () =>
+      fetch(`/api/orders/merchant-mine?pkh=${merchantPkh}`)
+        .then((r) => (r.ok ? r.json() : null))
+        .then((d) => live && d && setMerchantOrders(d.orders))
+        .catch(() => {});
+    tick();
+    const iv = setInterval(tick, 3000);
+    return () => {
+      live = false;
+      clearInterval(iv);
+    };
+  }, [merchantPkh]);
+
   const earnings = useMemo(() => {
-    const mineOrders = orders.filter((o) => o.merchant === merchantPkh);
     let totalFiat = 0;
-    for (const o of mineOrders) {
-      totalFiat += Number(o.fiatAmount) / 100; // paise -> rupees
-    }
+    for (const o of merchantOrders) totalFiat += Number(o.fiatAmount) / 100;
     return {
-      count: mineOrders.length,
+      count: merchantOrders.length,
       fiat: totalFiat,
-      // 2% of the fiat sums as spread earnings (fiat units)
       spread: totalFiat * 0.02,
     };
-  }, [orders, merchantPkh]);
+  }, [merchantOrders]);
 
   return (
     <main className="flex-1 flex flex-col">

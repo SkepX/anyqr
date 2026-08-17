@@ -192,6 +192,7 @@ function PayInner() {
   useEffect(() => {
     if (!orderId) return;
     if (status === "completed" || status === "error") return;
+    let missCount = 0;
     const iv = setInterval(async () => {
       const res = await fetch("/api/orders/list");
       if (!res.ok) return;
@@ -204,12 +205,31 @@ function PayInner() {
       };
       const me = orders.find((o) => o.orderId === orderId);
       if (!me) {
-        if (seenOnChain) {
-          setStatus("completed");
-          clearInterval(iv);
-        }
+        if (!seenOnChain) return;
+        // Don't jump to completed on a single miss — Blockfrost's indexer
+        // often lags a beat behind block inclusion between state transitions.
+        // Require 3 consecutive misses AND a registry-confirmed complete tx.
+        missCount += 1;
+        if (missCount < 3) return;
+        try {
+          const r = await fetch(
+            `/api/orders/mine?address=${encodeURIComponent(conn?.address ?? "")}`,
+          );
+          if (!r.ok) return;
+          const { orders: mine } = (await r.json()) as {
+            orders: Array<{ orderId: string; status: string; completeTxHash?: string | null }>;
+          };
+          const settled = mine.find(
+            (o) => o.orderId === orderId && (o.status === "Settled" || o.completeTxHash),
+          );
+          if (settled) {
+            setStatus("completed");
+            clearInterval(iv);
+          }
+        } catch {}
         return;
       }
+      missCount = 0;
       if (!seenOnChain) setSeenOnChain(true);
       if (me.status === "Accepted" && status === "placed") setStatus("accepted");
       if (me.status === "Accepted" && me.merchantPaid && status === "accepted") {
