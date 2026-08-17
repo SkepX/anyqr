@@ -796,6 +796,23 @@ function CompleteButton({ o }: { o: WireOrder }) {
       </div>
     );
   }
+  if (o.completeTxHash) {
+    return (
+      <div className="text-right">
+        <a
+          href={SCAN_URL + o.completeTxHash}
+          target="_blank"
+          rel="noopener"
+          className="text-sm font-medium text-[color:var(--accent-strong)] hover:underline"
+        >
+          Released ✓
+        </a>
+        <div className="text-xs text-[color:var(--accent-strong)] mt-0.5">
+          +{usdc} tUSDM
+        </div>
+      </div>
+    );
+  }
   return (
     <div className="text-right">
       <div className="inline-flex items-center gap-2 text-sm text-[color:var(--text-muted)]">
