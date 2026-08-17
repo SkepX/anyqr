@@ -282,7 +282,7 @@ function PayInner() {
         console.log("[markPaid] building tx for order", orderId);
         const { markPaid } = await import("@qrpay/sdk");
         const client = await buildClient(api);
-        const prepared = await markPaid(client).prepare({ orderId, disputeWindowMin: 5 });
+        const prepared = await markPaid(client).prepare({ orderId, disputeWindowMin: 1 });
         if (prepared.isErr()) {
           console.error("[markPaid] SDK error", prepared.error);
           const inner =
@@ -552,6 +552,14 @@ function PayStatus(props: {
       {error && (
         <div className="mb-4 p-3 rounded border border-[color:var(--warning)] bg-[color:var(--warning)]/10 text-sm text-[color:var(--warning)] break-all">
           {error}
+        </div>
+      )}
+
+      {status === "confirming" && (
+        <div className="mb-4 p-3 rounded border border-[color:var(--border)] text-sm text-[color:var(--text-muted)]">
+          Waiting for your wallet&apos;s signature. If no wallet window
+          appeared, click your wallet&apos;s icon in the Chrome toolbar —
+          the request is waiting there.
         </div>
       )}
 

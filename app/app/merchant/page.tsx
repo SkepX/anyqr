@@ -73,6 +73,10 @@ function MerchantInner() {
   const [orders, setOrders] = useState<WireOrder[]>([]);
   const [busy, setBusy] = useState<Record<string, boolean>>({});
   const [error, setError] = useState<string | null>(null);
+  // True while a tx sits in the wallet waiting for the user's signature —
+  // Lace doesn't always auto-open its confirmation window, so we surface
+  // a hint telling the merchant where to find the pending request.
+  const [awaitingSignature, setAwaitingSignature] = useState(false);
   const [pendingAccepts, setPendingAccepts] = useState<Record<string, WireOrder>>({});
   const emptyStreak = useRef(0);
   const mountId = useRef(Math.random().toString(36).slice(2, 7));
@@ -223,6 +227,7 @@ function MerchantInner() {
           // service worker, so the handle the client was built with may
           // be dead by now.
           console.log(`[merchant] act:accept signing + submitting`);
+          setAwaitingSignature(true);
           const txHash = await signAndSubmitPrepared(client, prepared.value, getApi);
           console.log(`[merchant] act:accept submitted`);
           return txHash;
@@ -232,6 +237,7 @@ function MerchantInner() {
         const prepared = await complete(client).prepare({ orderId: order.orderId });
         if (prepared.isErr()) throw new Error(extractErr(prepared.error));
         console.log(`[merchant] act:complete signing + submitting`);
+        setAwaitingSignature(true);
         return await signAndSubmitPrepared(client, prepared.value, getApi);
       };
       const sign = async (): Promise<string> => {
@@ -284,6 +290,7 @@ function MerchantInner() {
         setError(msg);
       }
     } finally {
+      setAwaitingSignature(false);
       setBusy((b) => ({ ...b, [order.orderId]: false }));
     }
   };
@@ -482,6 +489,14 @@ function MerchantInner() {
         {error && (
           <div className="card mb-4 border-[color:var(--warning)] text-[color:var(--warning)] text-sm break-all">
             {error}
+          </div>
+        )}
+
+        {awaitingSignature && (
+          <div className="card mb-4 text-sm">
+            Waiting for your wallet&apos;s signature. If no wallet window
+            appeared, click the Lace icon in your Chrome toolbar — the
+            request is waiting there.
           </div>
         )}
 
