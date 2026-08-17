@@ -126,6 +126,10 @@ export async function signAndSubmitPrepared(
   const provider = lucid.config().provider;
   if (!provider) return signed.submit();
   const cbor = signed.toCBOR();
+  // Backoff schedule ~2 blocks: a submit node that hasn't caught up to
+  // the inputs' block usually has within 50s. Retrying the SAME signed
+  // cbor costs the user nothing — no new signature.
+  const delays = [5_000, 10_000, 15_000, 20_000];
   let lastErr: unknown = null;
   for (let attempt = 1; attempt <= 5; attempt++) {
     try {
@@ -144,12 +148,20 @@ export async function signAndSubmitPrepared(
     } catch (e) {
       lastErr = e;
       const msg = String((e as { message?: string })?.message ?? e);
-      const transient = /3117|unknown UTxO|Could not submit transaction/i.test(msg);
+      // Both error dialects for "the node doesn't know these inputs
+      // yet": Blockfrost's 3117 wrapper and the raw Conway ledger dump.
+      // Same signed tx becomes valid once the node catches up — resubmit
+      // it rather than rebuilding (a rebuild forces a fresh signature).
+      const transient =
+        /3117|unknown UTxO|BadInputsUTxO|TranslationLogicMissingInput|Could not submit transaction/i.test(
+          msg,
+        );
       if (!transient || attempt === 5) throw e;
+      const delay = delays[attempt - 1] ?? 20_000;
       console.warn(
-        `[submit] node hasn't seen our inputs yet (attempt ${attempt}/5) — retrying in 4s`,
+        `[submit] node hasn't seen our inputs yet (attempt ${attempt}/5) — resubmitting same tx in ${delay / 1000}s`,
       );
-      await new Promise((r) => setTimeout(r, 4000));
+      await new Promise((r) => setTimeout(r, delay));
     }
   }
   throw lastErr;
