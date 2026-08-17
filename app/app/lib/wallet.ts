@@ -134,7 +134,8 @@ export function isWalletChannelClosed(e: unknown): boolean {
   return (
     s.includes("RemoteApiShutdown") ||
     (s.includes("channel") && s.includes("shutdown")) ||
-    s.includes("Extension context invalidated")
+    s.includes("Extension context invalidated") ||
+    s.includes("extension unresponsive")
   );
 }
 
@@ -150,7 +151,24 @@ async function callFreshApi<T>(
       console.log(`[wallet] enable() for ${walletKey} (method=${methodName})`);
       const injection = inj();
       if (!injection) return Promise.reject(new Error(`${walletKey} not installed`));
-      p = injection.enable();
+      // Timeout the enable() itself. Lace's extension messaging can
+      // silently hang here — enable() never resolves and never rejects.
+      // Fail fast so we can retry or bubble up to the user.
+      const raw = injection.enable();
+      p = Promise.race([
+        raw,
+        new Promise<Cip30Api>((_, rej) =>
+          setTimeout(
+            () =>
+              rej(
+                new Error(
+                  `${walletKey} enable() timed out after 12s — extension unresponsive`,
+                ),
+              ),
+            12_000,
+          ),
+        ),
+      ]);
       enabledApis.set(walletKey, p);
       p.catch((e) => {
         console.warn(`[wallet] enable() rejected`, e);
