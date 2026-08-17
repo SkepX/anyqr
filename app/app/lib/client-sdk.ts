@@ -262,7 +262,7 @@ export async function signAndSubmitPrepared(
   const holdQueueUntilConfirmed = (hash: string) =>
     extendTxLock(() =>
       Promise.race([
-        lucid.awaitTx(hash, 3_000),
+        lucid.awaitTx(hash, 10_000),
         new Promise((r) => setTimeout(r, 120_000)),
       ]),
     );
@@ -285,7 +285,7 @@ export async function signAndSubmitPrepared(
     const hash = signed.toHash();
     console.log("[submit] node says already included — verifying", hash.slice(0, 10));
     const found = await Promise.race([
-      lucid.awaitTx(hash, 3_000),
+      lucid.awaitTx(hash, 10_000),
       new Promise<boolean>((r) => setTimeout(() => r(false), 90_000)),
     ]);
     if (found) {

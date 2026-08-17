@@ -135,6 +135,12 @@ export async function POST(req: Request) {
       }
       return NextResponse.json({ ok: true, pending: true });
     }
+    // Submitted a beat too early for the node's slot clock — the next
+    // poke lands it. Quiet retry, don't scare the console.
+    if (/OutsideValidityInterval|dispute window still open/i.test(msg)) {
+      await registry.patch(orderId, { completingAt: 0 });
+      return NextResponse.json({ ok: true, pending: true });
+    }
     await registry.patch(orderId, { completingAt: 0 });
     console.error("[auto-complete]", orderId, msg);
     return NextResponse.json({ error: msg }, { status: 500 });

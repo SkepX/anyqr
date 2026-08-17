@@ -107,8 +107,13 @@ export async function adminCompleteOrder(
   if (order.datum.status !== "Paid")
     throw new Error(`order not in Paid state: ${String(order.datum.status)}`);
   const deadline = Number(order.datum.dispute_deadline);
-  if (Date.now() <= deadline + 2_000)
-    throw new Error("dispute window still open");
+  // The release tx's validity starts at deadline+1s; submitting the
+  // moment the countdown ends can be one slot too early for the node
+  // (OutsideValidityIntervalUTxO). Wait out the last few seconds here
+  // instead of failing and retrying 20s later.
+  const waitMs = deadline + 3_000 - Date.now();
+  if (waitMs > 20_000) throw new Error("dispute window still open");
+  if (waitMs > 0) await new Promise((r) => setTimeout(r, waitMs));
   const merchantPkh = order.datum.merchant;
   if (!merchantPkh || paymentCredentialOf(merchantAddress).hash !== merchantPkh)
     throw new Error("merchantAddress does not match the order's merchant");
