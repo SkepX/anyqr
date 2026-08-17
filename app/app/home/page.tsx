@@ -75,7 +75,6 @@ function HomeInner() {
               Wallet
             </NavTab>
             <NavTab href={`/scan?ccy=${ccy.code}`}>Scan</NavTab>
-            <NavTab href="/merchant">Merchant</NavTab>
           </nav>
           <span className="pill hidden sm:inline-flex">preprod</span>
         </div>

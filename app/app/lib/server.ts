@@ -5,25 +5,35 @@ import {
   Blockfrost,
   Lucid,
   paymentCredentialOf,
+  validatorToAddress,
   type LucidEvolution,
 } from "@lucid-evolution/lucid";
-import { createClient, type QrpayClient } from "@qrpay/sdk";
+import {
+  createClient,
+  type QrpayClient,
+} from "@qrpay/sdk";
 import { loadBlueprint, pickValidator } from "@qrpay/sdk/blueprint";
+import type { WireOrder } from "./wire";
 
-const WALLET_DIR = join(process.cwd(), "..", ".wallets");
-const BLUEPRINT_PATH = join(process.cwd(), "..", "escrow", "plutus.json");
-
-const blueprint = loadBlueprint(BLUEPRINT_PATH);
+const blueprint = loadBlueprint(blueprintPath());
 const validator = pickValidator(blueprint, "escrow.escrow.spend");
+
+function blueprintPath(): string {
+  // Try the bundled copy first (Vercel / production), then fall back to
+  // the sibling escrow project (local dev).
+  const bundled = join(process.cwd(), "plutus.json");
+  try {
+    readFileSync(bundled);
+    return bundled;
+  } catch {
+    return join(process.cwd(), "..", "escrow", "plutus.json");
+  }
+}
 
 function assertEnv(name: string): string {
   const v = process.env[name];
   if (!v) throw new Error(`missing env: ${name}`);
   return v;
-}
-
-function loadSeed(name: string): string {
-  return readFileSync(join(WALLET_DIR, `${name}.seed`), "utf8").trim();
 }
 
 async function mkLucid(): Promise<LucidEvolution> {
@@ -36,45 +46,17 @@ async function mkLucid(): Promise<LucidEvolution> {
   );
 }
 
-/** Full client with a wallet selected. Use for any tx-producing action. */
-export async function withWallet(name: "user" | "merchant" | "admin"): Promise<{
-  lucid: LucidEvolution;
-  client: QrpayClient;
-  address: string;
-  pkh: string;
-}> {
-  const lucid = await mkLucid();
-  lucid.selectWallet.fromSeed(loadSeed(name));
-  const address = await lucid.wallet().address();
-  const pkh = paymentCredentialOf(address).hash;
-  const adminAddr = await (async () => {
-    const l = await mkLucid();
-    l.selectWallet.fromSeed(loadSeed("admin"));
-    return l.wallet().address();
-  })();
-  const client = createClient({
-    lucid,
-    validator,
-    usdc: {
-      policyId: assertEnv("TUSDC_POLICY_ID"),
-      assetName: assertEnv("TUSDC_ASSET_NAME"),
-    },
-    adminPkh: paymentCredentialOf(adminAddr).hash,
-  });
-  return { lucid, client, address, pkh };
+function adminPkh(): string {
+  return paymentCredentialOf(assertEnv("ADMIN_ADDRESS")).hash;
 }
 
-/** Read-only client (no wallet). Fine for listing orders. */
+/**
+ * Read only qrpay client. No wallet is selected — used for querying escrow
+ * UTXOs and reading rates. All state-changing actions happen client-side
+ * via CIP-30 signing.
+ */
 export async function readOnly(): Promise<QrpayClient> {
   const lucid = await mkLucid();
-  // Load admin just so we know the adminPkh; no wallet is actually selected
-  // for reads, but createClient wants a lucid with wallet — use user for
-  // convenience, no signing will occur.
-  lucid.selectWallet.fromSeed(loadSeed("user"));
-  const adminSeedLucid = await mkLucid();
-  adminSeedLucid.selectWallet.fromSeed(loadSeed("admin"));
-  const adminPkh = paymentCredentialOf(await adminSeedLucid.wallet().address())
-    .hash;
   return createClient({
     lucid,
     validator,
@@ -82,12 +64,23 @@ export async function readOnly(): Promise<QrpayClient> {
       policyId: assertEnv("TUSDC_POLICY_ID"),
       assetName: assertEnv("TUSDC_ASSET_NAME"),
     },
-    adminPkh,
+    adminPkh: adminPkh(),
   });
 }
 
-/** Serializable projection of a StoredOrder for API responses. */
-import type { WireOrder } from "./wire";
+/** Expose the compiled validator + policy config to the browser SDK. */
+export function serverConfig() {
+  return {
+    validator: { type: validator.type, script: validator.script },
+    usdc: {
+      policyId: assertEnv("TUSDC_POLICY_ID"),
+      assetName: assertEnv("TUSDC_ASSET_NAME"),
+    },
+    adminPkh: adminPkh(),
+    scriptAddress: validatorToAddress("Preprod", validator),
+    network: "Preprod" as const,
+  };
+}
 
 export function toWireOrder(o: {
   utxo: { txHash: string; outputIndex: number };

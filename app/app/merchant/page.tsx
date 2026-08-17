@@ -251,9 +251,6 @@ function MerchantInner() {
             anyqr
           </Link>
           <nav className="hidden sm:flex items-center gap-1 text-sm">
-            <Link href="/home" className="px-3 py-1.5 text-[color:var(--text-muted)] hover:text-[color:var(--text)] rounded">
-              Wallet
-            </Link>
             <span className="px-3 py-1.5 bg-[color:var(--surface-alt)] rounded">
               Merchant
             </span>

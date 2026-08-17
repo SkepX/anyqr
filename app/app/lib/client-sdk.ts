@@ -31,7 +31,9 @@ export async function buildClient(api: Cip30Api) {
     new Blockfrost("https://cardano-preprod.blockfrost.io/api/v0", key),
     cfg.network,
   );
-  lucid.selectWallet.fromAPI(api);
+  // Cast: we only need the CIP-30 subset we typed; Lucid's WalletApi is
+  // structurally compatible with any real injected wallet.
+  lucid.selectWallet.fromAPI(api as unknown as Parameters<typeof lucid.selectWallet.fromAPI>[0]);
   return createClient({
     lucid,
     validator: cfg.validator,
