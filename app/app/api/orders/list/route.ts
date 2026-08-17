@@ -28,6 +28,12 @@ export async function GET() {
       const wire = toWireOrder(o);
       if (wire.status === "Placed" && wire.acceptDeadline < now) return null;
       const meta = metaById.get(wire.orderId);
+      // Any on-chain UTXO without a Blob meta entry is a pre-Blob
+      // leftover — buyers now register into Blob before placeOrder,
+      // and Blockfrost's ~10s indexing lag guarantees meta lands
+      // before the merchant ever sees the UTXO. Without meta the
+      // merchant has no paymentAddress and can't act, so skip it.
+      if (!meta) return null;
       return {
         ...wire,
         paymentAddress: meta?.paymentAddress ?? null,
