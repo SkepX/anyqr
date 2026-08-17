@@ -119,12 +119,19 @@ function withStepTimeout<T>(p: Promise<T>, ms: number, what: string): Promise<T>
 // snapshot — the first submit consumes it and the second dies on
 // BadInputsUTxO. The lock serializes build+sign+submit per tab.
 let txChain: Promise<unknown> = Promise.resolve();
+// VersionGuard must never reload the tab mid-flow — track active flows.
+function flowBusy(delta: number) {
+  const w = window as unknown as { __qrpayBusy?: number };
+  w.__qrpayBusy = Math.max(0, (w.__qrpayBusy ?? 0) + delta);
+}
 export function withTxLock<T>(fn: () => Promise<T>): Promise<T> {
+  flowBusy(+1);
   const run = txChain.then(fn, fn);
   txChain = run.then(
     () => undefined,
     () => undefined,
   );
+  void run.finally(() => flowBusy(-1));
   return run;
 }
 
