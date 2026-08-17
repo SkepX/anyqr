@@ -364,6 +364,12 @@ function MerchantInner() {
       setOrders((prev) =>
         prev.map((o) => (o.orderId === orderId ? { ...o, merchantPaid } : o)),
       );
+      // The row on screen may be the optimistic accept snapshot (the
+      // chain hasn't confirmed the accept yet) — patch it too, or the
+      // button visibly ignores the press.
+      setPendingAccepts((p) =>
+        p[orderId] ? { ...p, [orderId]: { ...p[orderId], merchantPaid } } : p,
+      );
     };
     seed(paidAt);
     for (let attempt = 1; attempt <= 3; attempt++) {
@@ -436,15 +442,21 @@ function MerchantInner() {
 
   // Poke the server-side release for any Paid order past its dispute
   // deadline. The server signs with the admin hot wallet — no merchant
-  // wallet popup. Idempotent server-side; throttled to one poke per
-  // order per 30s here so polling doesn't spam the lambda.
+  // wallet popup. Runs on a REAL 3s clock (an effect keyed on the order
+  // list only re-fires when the list changes — a countdown ending is
+  // not a list change, and releases sat unpoked for ages).
+  const paidRef = useRef<WireOrder[]>([]);
   useEffect(() => {
-    const now = Date.now();
-    for (const o of paid) {
-      if (now <= o.disputeDeadline + 2_000) continue;
-      const last = AUTO_COMPLETE_ATTEMPTED.get(o.orderId) ?? 0;
-      if (now - last < 30_000) continue;
-      AUTO_COMPLETE_ATTEMPTED.set(o.orderId, now);
+    paidRef.current = paid;
+  }, [paid]);
+  useEffect(() => {
+    const iv = setInterval(() => {
+      const now = Date.now();
+      for (const o of paidRef.current) {
+        if (now <= o.disputeDeadline + 1_000) continue;
+        const last = AUTO_COMPLETE_ATTEMPTED.get(o.orderId) ?? 0;
+        if (now - last < 20_000) continue;
+        AUTO_COMPLETE_ATTEMPTED.set(o.orderId, now);
       void fetch("/api/orders/auto-complete", {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -480,9 +492,10 @@ function MerchantInner() {
           }
         })
         .catch(() => {});
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [paid.map((o) => o.orderId + ":" + o.disputeDeadline).join(",")]);
+      }
+    }, 3_000);
+    return () => clearInterval(iv);
+  }, []);
 
   // Earnings roll in from BOTH mid-flight orders (on-chain) and settled
   // orders (registry entries whose UTXO is gone). We poll a per-merchant
