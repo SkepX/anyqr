@@ -5,7 +5,7 @@ import Link from "next/link";
 import { WalletButton } from "../components/WalletButton";
 import { RoleGuard } from "../components/RoleGuard";
 import { buildClient } from "../lib/client-sdk";
-import { isWalletChannelClosed, resetEnabledApi, useWalletConnect } from "../lib/wallet";
+import { useWalletConnect } from "../lib/wallet";
 import type { WireOrder } from "../lib/wire";
 
 const SCAN_URL = "https://preprod.cardanoscan.io/transaction/";
@@ -224,38 +224,7 @@ function MerchantInner() {
         if (r.isErr()) throw new Error(extractErr(r.error));
         return r.value.txHash;
       };
-      // Hard 60s ceiling — Lucid's tx.complete() sometimes hangs
-      // silently inside Blockfrost's tx-evaluate endpoint, and Lace's
-      // occasional messaging failures compound it. A stuck signing
-      // stays "Sending…" forever with no error; better to bail cleanly.
-      const withTimeout = <T,>(p: Promise<T>): Promise<T> =>
-        Promise.race([
-          p,
-          new Promise<T>((_, rej) =>
-            setTimeout(
-              () =>
-                rej(
-                  new Error(
-                    `${kind} timed out after 60s — wallet or network unresponsive. Retry, or try another wallet (Nami/Eternl).`,
-                  ),
-                ),
-              60_000,
-            ),
-          ),
-        ]);
-      let txHash: string;
-      try {
-        txHash = await withTimeout(sign());
-      } catch (e) {
-        console.warn(`[merchant] act:${kind} first attempt failed`, e);
-        if (isWalletChannelClosed(e) && conn) {
-          console.warn(`[merchant] wallet channel closed, retrying ${kind} with fresh handle`);
-          resetEnabledApi(conn.key);
-          txHash = await withTimeout(sign());
-        } else {
-          throw e;
-        }
-      }
+      const txHash = await sign();
       console.log(`[merchant] act:${kind} SUCCESS txHash=${txHash.slice(0, 10)}…`);
       // Record the hash so home/recent and merchant desk can show it.
       await fetch("/api/orders/record-tx", {

@@ -42,7 +42,7 @@ export const placeOrder = (client) => {
         return lucid
             .newTx()
             .pay.ToContract(client.scriptAddress, { kind: "inline", value: Data.to(datum, OrderDatum) }, { [client.usdcUnit]: p.usdcAmount })
-            .complete({ localUPLCEval: false });
+            .complete();
     }));
     const execute = (raw) => executeTx(prepare(raw));
     return { prepare, execute };

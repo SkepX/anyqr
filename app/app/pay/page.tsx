@@ -3,7 +3,7 @@ import { Suspense, useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { COUNTRIES } from "../lib/countries";
 import { buildClient } from "../lib/client-sdk";
-import { isWalletChannelClosed, resetEnabledApi, useWalletConnect } from "../lib/wallet";
+import { useWalletConnect } from "../lib/wallet";
 import { WalletButton } from "../components/WalletButton";
 
 function randomOrderId(): string {
@@ -147,26 +147,18 @@ function PayInner() {
       const fiatUnits = Math.round(fiatAmt * 100);
       const newOrderId = randomOrderId();
 
-      const doPlace = async () => {
-        const api = await getApi();
-        if (!api) throw new Error("Wallet unavailable");
-        const { placeOrder } = await import("@qrpay/sdk");
-        const client = await buildClient(api);
-        return placeOrder(client).execute({
-          orderId: newOrderId,
-          usdcAmount: usdcUnits,
-          fiatAmount: BigInt(fiatUnits),
-          fiatCurrency: ccyCode,
-          acceptWindowMin: 10,
-          completeWindowMin: 30,
-        });
-      };
-      let r = await doPlace();
-      if (r.isErr() && isWalletChannelClosed(r.error)) {
-        console.warn("[pay] wallet channel closed, retrying placeOrder");
-        resetEnabledApi(conn.key);
-        r = await doPlace();
-      }
+      const api = await getApi();
+      if (!api) throw new Error("Wallet unavailable");
+      const { placeOrder } = await import("@qrpay/sdk");
+      const client = await buildClient(api);
+      const r = await placeOrder(client).execute({
+        orderId: newOrderId,
+        usdcAmount: usdcUnits,
+        fiatAmount: BigInt(fiatUnits),
+        fiatCurrency: ccyCode,
+        acceptWindowMin: 10,
+        completeWindowMin: 30,
+      });
       if (r.isErr()) throw new Error(JSON.stringify(r.error));
 
       // record off-chain metadata so the merchant can render the QR + so
@@ -262,23 +254,15 @@ function PayInner() {
     setStatus("confirming");
     setError(null);
     try {
-      const doMarkPaid = async () => {
-        const api = await getApi();
-        if (!api) throw new Error("Wallet unavailable. Reconnect and try again.");
-        const net = await api.getNetworkId();
-        if (net !== 0)
-          throw new Error("Your wallet is on Mainnet. Switch to Preprod and retry.");
-        const { markPaid } = await import("@qrpay/sdk");
-        const client = await buildClient(api);
-        return markPaid(client).execute({ orderId, disputeWindowMin: 5 });
-      };
+      const api = await getApi();
+      if (!api) throw new Error("Wallet unavailable. Reconnect and try again.");
+      const net = await api.getNetworkId();
+      if (net !== 0)
+        throw new Error("Your wallet is on Mainnet. Switch to Preprod and retry.");
       console.log("[markPaid] submitting for order", orderId);
-      let r = await doMarkPaid();
-      if (r.isErr() && isWalletChannelClosed(r.error) && conn) {
-        console.warn("[markPaid] wallet channel closed, retrying with fresh handle");
-        resetEnabledApi(conn.key);
-        r = await doMarkPaid();
-      }
+      const { markPaid } = await import("@qrpay/sdk");
+      const client = await buildClient(api);
+      const r = await markPaid(client).execute({ orderId, disputeWindowMin: 5 });
       if (r.isErr()) {
         console.error("[markPaid] SDK error", r.error);
         const inner =

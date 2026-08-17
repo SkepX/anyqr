@@ -115,123 +115,11 @@ export function useWalletConnect(): WalletState {
   return ctx;
 }
 
-// Lace kills its CIP-30 channel after short idle periods (seconds),
-// so any handle we hold across user idle time is likely stale by the
-// time we sign with it. Lucid's tx pipeline calls several api methods
-// in sequence (getUsedAddresses -> signTx -> submitTx) and Lace can
-// tear the channel down between any two of them.
-//
-// The fix: hand Lucid a Proxy that re-calls `enable()` on demand and
-// transparently retries on RemoteApiShutdownError. Lucid never sees
-// the reconnect; the underlying signing prompt still appears once.
+// Cache the enabled api handle per wallet key. Lucid needs a single
+// stable api reference throughout a single tx.complete() -> sign -> submit
+// flow. Handing it a fresh handle on every call (or a proxy that
+// re-enables) breaks Lace, which hangs its second enable() silently.
 const enabledApis = new Map<string, Promise<Cip30Api>>();
-export function resetEnabledApi(key: string) {
-  console.log(`[wallet] resetEnabledApi ${key}`);
-  enabledApis.delete(key);
-}
-export function isWalletChannelClosed(e: unknown): boolean {
-  const s = String(e instanceof Error ? e.message : e);
-  return (
-    s.includes("RemoteApiShutdown") ||
-    (s.includes("channel") && s.includes("shutdown")) ||
-    s.includes("Extension context invalidated") ||
-    s.includes("extension unresponsive")
-  );
-}
-
-async function callFreshApi<T>(
-  walletKey: string,
-  methodName: string,
-  fn: (api: Cip30Api) => Promise<T>,
-): Promise<T> {
-  const inj = () => readInjected()[walletKey];
-  const enable = () => {
-    let p = enabledApis.get(walletKey);
-    if (!p) {
-      console.log(`[wallet] enable() for ${walletKey} (method=${methodName})`);
-      const injection = inj();
-      if (!injection) return Promise.reject(new Error(`${walletKey} not installed`));
-      // Timeout the enable() itself. Lace's extension messaging can
-      // silently hang here — enable() never resolves and never rejects.
-      // Fail fast so we can retry or bubble up to the user.
-      const raw = injection.enable();
-      p = Promise.race([
-        raw,
-        new Promise<Cip30Api>((_, rej) =>
-          setTimeout(
-            () =>
-              rej(
-                new Error(
-                  `${walletKey} enable() timed out after 12s — extension unresponsive`,
-                ),
-              ),
-            12_000,
-          ),
-        ),
-      ]);
-      enabledApis.set(walletKey, p);
-      p.catch((e) => {
-        console.warn(`[wallet] enable() rejected`, e);
-        enabledApis.delete(walletKey);
-      });
-    }
-    return p;
-  };
-  for (let attempt = 0; attempt < 2; attempt++) {
-    try {
-      const api = await enable();
-      const t0 = performance.now();
-      const result = await fn(api);
-      console.log(`[wallet] ${methodName} ok in ${Math.round(performance.now() - t0)}ms`);
-      return result;
-    } catch (e) {
-      if (isWalletChannelClosed(e) && attempt === 0) {
-        console.warn(`[wallet] ${methodName} hit dead channel, re-enabling ${walletKey}`);
-        enabledApis.delete(walletKey);
-        continue;
-      }
-      console.warn(`[wallet] ${methodName} threw`, e);
-      throw e;
-    }
-  }
-  throw new Error("unreachable");
-}
-
-/** Build a CIP-30 api handle that transparently reconnects to the
- *  wallet extension when the underlying channel dies mid-call.
- *  Uses a Proxy so ALL methods (including Lucid-only ones like
- *  getUtxos / getCollateral / getRewardAddresses) get the same
- *  reconnect behavior. */
-function makeResilientApi(walletKey: string): Cip30Api {
-  return new Proxy({} as Cip30Api, {
-    get(_target, prop) {
-      // Never claim to have `then` / `catch` / `finally` — otherwise
-      // `await` treats the handle as a thenable and hangs forever
-      // waiting for it to "resolve". Same for symbols (iterators,
-      // Symbol.toPrimitive) and structural-clone probes.
-      if (
-        typeof prop === "symbol" ||
-        prop === "then" ||
-        prop === "catch" ||
-        prop === "finally" ||
-        prop === "constructor" ||
-        prop === "toJSON"
-      ) {
-        return undefined;
-      }
-      const key = prop as string;
-      return (...args: unknown[]) =>
-        callFreshApi(walletKey, key, (api) => {
-          const fn = (api as unknown as Record<string, unknown>)[key];
-          if (typeof fn !== "function")
-            throw new Error(`api.${key} is not a function`);
-          return Promise.resolve(
-            (fn as (...a: unknown[]) => unknown).apply(api, args),
-          );
-        });
-    },
-  });
-}
 
 function useWalletConnectInternal(): WalletState {
   const [conn, setConn] = useState<Connection | null>(null);
@@ -310,8 +198,7 @@ function useWalletConnectInternal(): WalletState {
     try {
       const inj = readInjected()[walletKey];
       if (!inj) throw new Error(`${walletKey} not installed`);
-      // Fresh connect — drop any stale cached api first.
-      resetEnabledApi(walletKey);
+      enabledApis.delete(walletKey);
       const enablePromise = inj.enable();
       enabledApis.set(walletKey, enablePromise);
       const api = await enablePromise;
@@ -322,7 +209,7 @@ function useWalletConnectInternal(): WalletState {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(conn));
       return conn;
     } catch (e) {
-      resetEnabledApi(walletKey);
+      enabledApis.delete(walletKey);
       setError(String(e instanceof Error ? e.message : e));
       throw e;
     } finally {
@@ -331,14 +218,25 @@ function useWalletConnectInternal(): WalletState {
   }, []);
 
   const disconnect = useCallback(() => {
-    if (conn) resetEnabledApi(conn.key);
+    if (conn) enabledApis.delete(conn.key);
     setConn(null);
     if (typeof window !== "undefined") localStorage.removeItem(STORAGE_KEY);
   }, [conn]);
 
+  /** Return the CIP-30 api handle for the connected wallet.
+   *  Reuses the enable() promise established at connect / restore time —
+   *  hand Lucid the SAME api reference for the whole tx flow. */
   const getApi = useCallback(async (): Promise<Cip30Api | null> => {
     if (!conn) return null;
-    return makeResilientApi(conn.key);
+    let p = enabledApis.get(conn.key);
+    if (!p) {
+      const inj = readInjected()[conn.key];
+      if (!inj) return null;
+      p = inj.enable();
+      enabledApis.set(conn.key, p);
+      p.catch(() => enabledApis.delete(conn.key));
+    }
+    return p;
   }, [conn]);
 
   return useMemo(

@@ -21,7 +21,7 @@ export const markPaid = (client) => {
             .addSignerKey(signer)
             .validFrom(now - 60_000)
             .validTo(now + 5 * 60_000)
-            .complete({ localUPLCEval: false });
+            .complete();
     })));
     const execute = (raw) => executeTx(prepare(raw));
     return { prepare, execute };

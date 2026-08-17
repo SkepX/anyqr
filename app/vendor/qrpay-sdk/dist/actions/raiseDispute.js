@@ -12,7 +12,7 @@ export const raiseDispute = (client) => {
         return beginSpend(client, order, "RaiseDispute")
             .pay.ToContract(client.scriptAddress, inlineDatum(newDatum), escrowValue(client, order))
             .addSignerKey(signer)
-            .complete({ localUPLCEval: false });
+            .complete();
     })));
     const execute = (raw) => executeTx(prepare(raw));
     return { prepare, execute };
