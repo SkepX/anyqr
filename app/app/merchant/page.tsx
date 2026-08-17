@@ -197,6 +197,16 @@ function MerchantInner() {
       if (!silent) setError("Connect a wallet to act as merchant.");
       return;
     }
+    // A stale row can outlive the order's accept window (polls keep the
+    // last non-empty list for a few beats). Refuse up front instead of
+    // building a tx that expires before it can land.
+    if (kind === "accept" && order.acceptDeadline < Date.now() + 30_000) {
+      if (!silent)
+        setError(
+          "This order's accept window has expired — it will disappear shortly. Ask the buyer to place a fresh one.",
+        );
+      return;
+    }
     setBusy((b) => ({ ...b, [order.orderId]: true }));
     if (!silent) setError(null);
     if (kind === "accept") {

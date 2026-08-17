@@ -67,6 +67,29 @@ export async function buildClient(api: Cip30Api, minFreeAda = 3) {
 
 type BuiltClient = Awaited<ReturnType<typeof buildClient>>;
 
+/** Every awaited network/wallet step gets a hard deadline — a stalled
+ *  connection (a sick Blockfrost node holding the socket open, a wedged
+ *  wallet promise) must become a catchable error, never a silent
+ *  forever-spinner. */
+function withStepTimeout<T>(p: Promise<T>, ms: number, what: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const t = setTimeout(
+      () => reject(new Error(`${what} timed out after ${ms / 1000}s`)),
+      ms,
+    );
+    p.then(
+      (v) => {
+        clearTimeout(t);
+        resolve(v);
+      },
+      (e) => {
+        clearTimeout(t);
+        reject(e);
+      },
+    );
+  });
+}
+
 // One wallet signs one tx at a time. Two flows building concurrently (a
 // user click racing the auto-complete timer) select from the same UTxO
 // snapshot — the first submit consumes it and the second dies on
@@ -127,7 +150,13 @@ export async function signAndSubmitPrepared(
     );
   }
   const rebound = lucid.fromTx(prepared.toCBOR());
-  const signed = await rebound.sign.withWallet().complete();
+  console.log("[submit] requesting wallet signature");
+  const signed = await withStepTimeout(
+    rebound.sign.withWallet().complete(),
+    120_000,
+    "wallet signature",
+  );
+  console.log("[submit] tx signed");
   // Submit through our own Blockfrost provider — the same instance the
   // tx was built against — instead of the wallet's backend. The wallet
   // submits via a different node that can lag a block behind Blockfrost
@@ -167,28 +196,40 @@ export async function signAndSubmitPrepared(
     );
   for (let attempt = 1; ; attempt++) {
     try {
-      const hash = await provider.submitTx(cbor);
+      console.log(`[submit] via provider (attempt ${attempt})`);
+      const hash = await withStepTimeout(
+        provider.submitTx(cbor),
+        20_000,
+        "provider submit",
+      );
+      console.log(`[submit] provider accepted the tx`);
       holdQueueUntilConfirmed(hash);
       return hash;
     } catch (e) {
       const msg = String((e as { message?: string })?.message ?? e);
       const expired = lucid.currentSlot() > ttlSlot - 2;
-      if (!isMissingInputMsg(msg) || expired || Date.now() > giveUpAt) throw e;
+      const retriable = isMissingInputMsg(msg) || /timed out/i.test(msg);
+      if (!retriable || expired || Date.now() > giveUpAt) throw e;
       console.warn(
-        `[submit] provider rejected (attempt ${attempt}):`,
+        `[submit] provider rejected/stalled (attempt ${attempt}):`,
         msg.slice(0, 260),
       );
       // Second, independent door to the mempool: the wallet's own
       // backend. Same signed cbor, no new signature. Whichever node is
       // actually current accepts the tx.
       try {
-        const hash = await signed.submit();
+        console.log(`[submit] trying wallet path`);
+        const hash = await withStepTimeout(
+          signed.submit(),
+          30_000,
+          "wallet submit",
+        );
         console.log(`[submit] wallet path accepted the tx`);
         holdQueueUntilConfirmed(hash);
         return hash;
       } catch (e2) {
         console.warn(
-          `[submit] wallet path also rejected:`,
+          `[submit] wallet path also failed:`,
           String((e2 as { message?: string })?.message ?? e2).slice(0, 200),
         );
       }
