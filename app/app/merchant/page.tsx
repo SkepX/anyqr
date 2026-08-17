@@ -248,11 +248,10 @@ function MerchantInner() {
             });
           }
           // Re-snapshot the wallet's confirmed coins right before
-          // building: the buyer's place tx (same wallet in these tests)
-          // confirms DURING the wait above and consumes coins the
-          // pre-wait snapshot still lists — a build on the stale
-          // snapshot references dead inputs that every node rejects.
-          await refreshWalletView(client.cfg.lucid);
+          // building, explicitly excluding everything the place tx
+          // consumed (same wallet in these tests) — the address-coins
+          // endpoint itself has served >100s-stale answers.
+          await refreshWalletView(client.cfg.lucid, order.txHash);
           console.log(`[merchant] act:accept building tx`);
           const t2 = performance.now();
           const prepared = await acceptOrder(client).prepare({

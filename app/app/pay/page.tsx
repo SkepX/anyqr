@@ -532,11 +532,13 @@ function PayInner() {
         // before the accept is in a block — the on-chain state must be
         // Accepted before markPaid can build, and the coin snapshot
         // must be re-taken after any wait.
-        await client.waitForStatus(orderId, ["Accepted", "Paid"], {
+        const ord = await client.waitForStatus(orderId, ["Accepted", "Paid"], {
           timeoutMs: 90_000,
           intervalMs: 3_000,
         });
-        await refreshWalletView(client.cfg.lucid);
+        // Exclude coins the accept tx consumed (same wallet both roles)
+        // — the address-coins endpoint can serve stale answers.
+        await refreshWalletView(client.cfg.lucid, ord.utxo.txHash);
         const prepared = await markPaid(client).prepare({ orderId, disputeWindowMin: 1 });
         if (prepared.isErr()) {
           console.error("[markPaid] SDK error", prepared.error);

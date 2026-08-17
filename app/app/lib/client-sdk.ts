@@ -72,11 +72,40 @@ type BuiltClient = Awaited<ReturnType<typeof buildClient>>;
  *  every node rejects. */
 export async function refreshWalletView(
   lucid: BuiltClient["cfg"]["lucid"],
+  excludeSpentByTx?: string,
 ): Promise<void> {
   const addr = await lucid.wallet().address();
+  // The address-coins endpoint has served answers >100s stale (session-
+  // sticky replicas), listing coins a confirmed tx already consumed. A
+  // confirmed tx's OWN input list is immutable and therefore always
+  // truthful — subtract those coins explicitly.
+  const spent = new Set<string>();
+  if (excludeSpentByTx) {
+    const key = process.env.NEXT_PUBLIC_BLOCKFROST_PROJECT_ID ?? "";
+    for (let i = 1; i <= 3; i++) {
+      try {
+        const r = await fetch(
+          `https://cardano-preprod.blockfrost.io/api/v0/txs/${excludeSpentByTx}/utxos`,
+          { headers: { project_id: key } },
+        );
+        if (r.ok) {
+          const j = (await r.json()) as {
+            inputs: Array<{ tx_hash: string; output_index: number }>;
+          };
+          for (const inp of j.inputs) spent.add(`${inp.tx_hash}#${inp.output_index}`);
+          break;
+        }
+      } catch {}
+      await new Promise((res) => setTimeout(res, 2_000));
+    }
+    if (spent.size === 0)
+      console.warn("[buildClient] couldn't load spender inputs — pruning skipped");
+  }
   for (let attempt = 1; ; attempt++) {
     try {
-      const confirmed = await lucid.utxosAt(addr);
+      const confirmed = (await lucid.utxosAt(addr)).filter(
+        (u) => !spent.has(`${u.txHash}#${u.outputIndex}`),
+      );
       if (confirmed.length > 0) lucid.overrideUTxOs(confirmed);
       else
         console.warn("[buildClient] confirmed wallet view is empty — using wallet's own view");
