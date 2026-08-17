@@ -5,7 +5,7 @@ import Link from "next/link";
 import { WalletButton } from "../components/WalletButton";
 import { RoleGuard } from "../components/RoleGuard";
 import { buildClient } from "../lib/client-sdk";
-import { useWalletConnect } from "../lib/wallet";
+import { isWalletChannelClosed, resetEnabledApi, useWalletConnect } from "../lib/wallet";
 import type { WireOrder } from "../lib/wire";
 
 const SCAN_URL = "https://preprod.cardanoscan.io/transaction/";
@@ -252,29 +252,41 @@ function MerchantInner() {
       }));
     }
     try {
-      const api = await getApi();
-      if (!api) throw new Error("Wallet unavailable");
-      const client = await buildClient(api);
-      let txHash: string;
-      if (kind === "accept") {
-        // Fake merchant ECIES pubkey for demo — real flow would generate keypair.
-        const randomBytes = new Uint8Array(64);
-        crypto.getRandomValues(randomBytes);
-        const merchantPublicKey = [...randomBytes]
-          .map((b) => b.toString(16).padStart(2, "0"))
-          .join("");
-        const { acceptOrder } = await import("@qrpay/sdk");
-        const r = await acceptOrder(client).execute({
-          orderId: order.orderId,
-          merchantPublicKey,
-        });
-        if (r.isErr()) throw new Error(extractErr(r.error));
-        txHash = r.value.txHash;
-      } else {
+      // Retry once if Lace's channel died between enable() and signing.
+      const sign = async (): Promise<string> => {
+        const api = await getApi();
+        if (!api) throw new Error("Wallet unavailable");
+        const client = await buildClient(api);
+        if (kind === "accept") {
+          const randomBytes = new Uint8Array(64);
+          crypto.getRandomValues(randomBytes);
+          const merchantPublicKey = [...randomBytes]
+            .map((b) => b.toString(16).padStart(2, "0"))
+            .join("");
+          const { acceptOrder } = await import("@qrpay/sdk");
+          const r = await acceptOrder(client).execute({
+            orderId: order.orderId,
+            merchantPublicKey,
+          });
+          if (r.isErr()) throw new Error(extractErr(r.error));
+          return r.value.txHash;
+        }
         const { complete } = await import("@qrpay/sdk");
         const r = await complete(client).execute({ orderId: order.orderId });
         if (r.isErr()) throw new Error(extractErr(r.error));
-        txHash = r.value.txHash;
+        return r.value.txHash;
+      };
+      let txHash: string;
+      try {
+        txHash = await sign();
+      } catch (e) {
+        if (isWalletChannelClosed(e) && conn) {
+          console.warn(`[merchant] wallet channel closed, retrying ${kind} with fresh handle`);
+          resetEnabledApi(conn.key);
+          txHash = await sign();
+        } else {
+          throw e;
+        }
       }
       // Record the hash so home/recent and merchant desk can show it.
       await fetch("/api/orders/record-tx", {

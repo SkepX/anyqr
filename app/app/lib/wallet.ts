@@ -122,8 +122,15 @@ export function useWalletConnect(): WalletState {
 // mid-flight and Lucid surfaces "RemoteApiShutdownError". Caching
 // the handle guarantees we only ever hold one live session.
 const enabledApis = new Map<string, Promise<Cip30Api>>();
-function resetEnabledApi(key: string) {
+export function resetEnabledApi(key: string) {
+  console.log(`[wallet] resetEnabledApi ${key}`);
   enabledApis.delete(key);
+}
+/** True if the error came from a Lucid/CIP-30 channel that died
+ *  between enable() and the signing call — Lace is the usual culprit. */
+export function isWalletChannelClosed(e: unknown): boolean {
+  const s = String(e instanceof Error ? e.message : e);
+  return s.includes("RemoteApiShutdown") || s.includes("channel") && s.includes("shutdown");
 }
 
 function useWalletConnectInternal(): WalletState {
