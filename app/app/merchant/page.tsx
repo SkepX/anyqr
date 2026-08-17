@@ -329,9 +329,10 @@ function MerchantInner() {
     setError(null);
     // Hard client-side timeout: if the network hangs, at least clear
     // the spinner and surface the failure rather than leaving the
-    // button stuck on "Sending…" forever.
+    // button stuck on "Sending…" forever. 15s — the route may retry
+    // once internally on a cold registry read.
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 8000);
+    const timeout = setTimeout(() => controller.abort(), 15000);
     try {
       const res = await fetch("/api/orders/merchant-paid", {
         method: "POST",
@@ -340,9 +341,24 @@ function MerchantInner() {
         signal: controller.signal,
       });
       if (!res.ok) throw new Error(`merchant-paid failed: ${res.status}`);
+      const paidAt = Date.now();
+      // Write through the meta cache too — a poll answered by a lambda
+      // with a stale registry would otherwise return merchantPaid=null
+      // and flip the button back to "Pay this now".
+      const cached = META_CACHE.get(orderId);
+      META_CACHE.set(orderId, {
+        paymentAddress: cached?.paymentAddress ?? null,
+        payeeName: cached?.payeeName ?? null,
+        buyerConfirmed: cached?.buyerConfirmed ?? null,
+        merchantPaid: paidAt,
+        placeTxHash: cached?.placeTxHash ?? null,
+        acceptTxHash: cached?.acceptTxHash ?? null,
+        buyerConfirmedTxHash: cached?.buyerConfirmedTxHash ?? null,
+        completeTxHash: cached?.completeTxHash ?? null,
+      });
       setOrders((prev) =>
         prev.map((o) =>
-          o.orderId === orderId ? { ...o, merchantPaid: Date.now() } : o,
+          o.orderId === orderId ? { ...o, merchantPaid: paidAt } : o,
         ),
       );
       void load();

@@ -68,7 +68,9 @@ function saveToFile(store: Map<string, OrderMeta>) {
 async function loadFromBlob(): Promise<Map<string, OrderMeta>> {
   try {
     const info = await head(BLOB_KEY);
-    const r = await fetch(info.url, { cache: "no-store" });
+    // Cache-bust: blob URLs are stable and served via CDN, so a plain
+    // fetch can return minutes-stale registry content on other lambdas.
+    const r = await fetch(`${info.url}?ts=${Date.now()}`, { cache: "no-store" });
     if (!r.ok) throw new Error(`blob fetch ${r.status}`);
     const arr = (await r.json()) as OrderMeta[];
     return new Map(arr.map((m) => [m.orderId, m]));
@@ -87,6 +89,7 @@ async function saveToBlob(store: Map<string, OrderMeta>) {
     allowOverwrite: true,
     addRandomSuffix: false,
     contentType: "application/json",
+    cacheControlMaxAge: 60, // minimum allowed — keep CDN staleness short
   });
 }
 

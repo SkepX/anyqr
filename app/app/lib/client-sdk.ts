@@ -126,12 +126,17 @@ export async function signAndSubmitPrepared(
   const provider = lucid.config().provider;
   if (!provider) return signed.submit();
   const cbor = signed.toCBOR();
-  // Backoff schedule ~2 blocks: a submit node that hasn't caught up to
-  // the inputs' block usually has within 50s. Retrying the SAME signed
-  // cbor costs the user nothing — no new signature.
-  const delays = [5_000, 10_000, 15_000, 20_000];
-  let lastErr: unknown = null;
-  for (let attempt = 1; attempt <= 5; attempt++) {
+  // The signed tx stays valid until its TTL, and resubmitting the SAME
+  // cbor needs no new signature. So on any stale-view rejection (a node
+  // that hasn't caught up to our inputs' block — either error dialect,
+  // including collateral/value cascades) keep resubmitting until it
+  // lands. Only give up — which sends the caller to a rebuild and a
+  // fresh signature — when the tx expires, the error is a real one, or
+  // 4 minutes pass.
+  const ttlRaw = signed.toTransaction().body().ttl();
+  const ttlSlot = ttlRaw === undefined ? Number.POSITIVE_INFINITY : Number(ttlRaw);
+  const giveUpAt = Date.now() + 240_000;
+  for (let attempt = 1; ; attempt++) {
     try {
       const hash = await provider.submitTx(cbor);
       // Hold the tx queue (not this caller) until the tx lands in a
@@ -146,23 +151,17 @@ export async function signAndSubmitPrepared(
       );
       return hash;
     } catch (e) {
-      lastErr = e;
       const msg = String((e as { message?: string })?.message ?? e);
-      // Both error dialects for "the node doesn't know these inputs
-      // yet": Blockfrost's 3117 wrapper and the raw Conway ledger dump.
-      // Same signed tx becomes valid once the node catches up — resubmit
-      // it rather than rebuilding (a rebuild forces a fresh signature).
       const transient =
-        /3117|unknown UTxO|BadInputsUTxO|TranslationLogicMissingInput|Could not submit transaction/i.test(
-          msg,
-        );
-      if (!transient || attempt === 5) throw e;
-      const delay = delays[attempt - 1] ?? 20_000;
+        isStaleUtxoError(e) ||
+        /3117|unknown UTxO|Could not submit transaction/i.test(msg);
+      const expired = lucid.currentSlot() > ttlSlot - 2;
+      if (!transient || expired || Date.now() > giveUpAt) throw e;
+      const delay = Math.min(5_000 * attempt, 15_000);
       console.warn(
-        `[submit] node hasn't seen our inputs yet (attempt ${attempt}/5) — resubmitting same tx in ${delay / 1000}s`,
+        `[submit] node view stale (attempt ${attempt}) — resubmitting same signed tx in ${delay / 1000}s`,
       );
       await new Promise((r) => setTimeout(r, delay));
     }
   }
-  throw lastErr;
 }
