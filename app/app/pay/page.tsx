@@ -281,14 +281,41 @@ function PayInner() {
           disputeDeadline?: number;
         }>;
       };
+      // An entirely-empty list is infrastructure noise (a lambda whose
+      // registry read hiccuped serves [] with a 200) — it is never
+      // evidence about OUR order. Only a non-empty list that lacks the
+      // order counts as a miss.
+      if (orders.length === 0) return;
       const me = orders.find((o) => o.orderId === orderId);
       if (!me) {
         missCount += 1;
         // Restored "placed" sessions can reference an order the list no
-        // longer returns (accept window lapsed → filtered out). Expire
-        // after ~15s of consecutive misses; fresh placements appear via
-        // the registry's pending fast-path within a poll or two.
+        // longer returns (accept window lapsed → filtered out). Before
+        // resetting, double-check against the chain-authoritative mine
+        // endpoint — if the order is alive there, adopt its status
+        // instead of nuking the session (false positives here stranded
+        // a live purchase once).
         if (status === "placed" && missCount >= 7) {
+          try {
+            const r = await fetch(
+              `/api/orders/mine?address=${encodeURIComponent(conn?.address ?? "")}`,
+            );
+            if (r.ok) {
+              const { orders: mine } = (await r.json()) as {
+                orders: Array<{ orderId: string; status: string; merchantPaid?: number | null }>;
+              };
+              const alive = mine.find((o) => o.orderId === orderId);
+              if (alive) {
+                missCount = 0;
+                if (alive.status === "Accepted")
+                  setStatus(alive.merchantPaid ? "merchant_paid" : "accepted");
+                else if (alive.status === "Paid") setStatus("paid");
+                return;
+              }
+            }
+          } catch {
+            return; // network noise — never reset on it
+          }
           startOver();
           return;
         }
@@ -356,11 +383,18 @@ function PayInner() {
     fiatCurrency: string;
     usdcAmount: string;
   }
+  interface InflightOrder extends LockedOrder {
+    status: string;
+    merchantPaid?: number | null;
+    placeTxHash?: string | null;
+  }
   const [locked, setLocked] = useState<LockedOrder[]>([]);
+  const [inflight, setInflight] = useState<InflightOrder[]>([]);
   const [reclaimNote, setReclaimNote] = useState<string | null>(null);
   useEffect(() => {
     if (status !== "review" || !conn) {
       setLocked([]);
+      setInflight([]);
       return;
     }
     let live = true;
@@ -371,7 +405,9 @@ function PayInner() {
         );
         if (!r.ok) return;
         const { orders } = (await r.json()) as {
-          orders: Array<LockedOrder & { status: string; acceptDeadline?: number }>;
+          orders: Array<
+            InflightOrder & { acceptDeadline?: number }
+          >;
         };
         if (!live) return;
         setLocked(
@@ -381,15 +417,38 @@ function PayInner() {
               (o.acceptDeadline ?? 0) < Date.now() - 5_000,
           ),
         );
+        // Live orders this wallet still owes an action on — a page reset
+        // (or a fresh scan) must never strand them without a way back.
+        setInflight(
+          orders.filter(
+            (o) =>
+              o.status === "Accepted" ||
+              o.status === "Paid" ||
+              (o.status === "Placed" &&
+                (o.acceptDeadline ?? 0) >= Date.now() - 5_000),
+          ),
+        );
       } catch {}
     };
     void tick();
-    const iv = setInterval(tick, 15_000);
+    const iv = setInterval(tick, 10_000);
     return () => {
       live = false;
       clearInterval(iv);
     };
   }, [status, conn]);
+
+  const resumeOrder = (o: InflightOrder) => {
+    setOrderId(o.orderId);
+    setPlaceTx(o.placeTxHash ?? null);
+    setAmount((Number(o.fiatAmount) / 100).toString());
+    startedAtRef.current = Date.now(); // unknown placement time — fresh clock
+    setSeenOnChain(true);
+    if (o.status === "Paid") setStatus("paid");
+    else if (o.status === "Accepted")
+      setStatus(o.merchantPaid ? "merchant_paid" : "accepted");
+    else setStatus("placed");
+  };
 
   // Reclaim the escrowed tUSDM of an expired Placed order (the on-chain
   // CancelUnaccepted path — user signature required, funds return to the
@@ -536,6 +595,36 @@ function PayInner() {
           </button>
           <WalletButton />
         </div>
+
+        {status === "review" && inflight.length > 0 && (
+          <div className="mb-6 p-4 rounded border border-[color:var(--accent-strong)]">
+            <div className="text-sm font-medium mb-1">Order in progress</div>
+            {inflight.map((o) => (
+              <div
+                key={o.orderId}
+                className="flex items-center justify-between gap-3 py-1.5"
+              >
+                <span className="text-sm text-[color:var(--text-muted)]">
+                  {ccy.symbol}
+                  {(Number(o.fiatAmount) / 100).toFixed(2)} —{" "}
+                  {o.status === "Paid"
+                    ? "confirmed, releasing soon"
+                    : o.merchantPaid
+                      ? "merchant says they paid you — confirm it"
+                      : o.status === "Accepted"
+                        ? "merchant accepted, paying you now"
+                        : "waiting for a merchant"}
+                </span>
+                <button
+                  onClick={() => resumeOrder(o)}
+                  className="btn btn-primary text-sm px-3 py-1.5 shrink-0"
+                >
+                  Resume
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
 
         {status === "review" && (locked.length > 0 || reclaimNote) && (
           <div className="mb-6 p-4 rounded border border-[color:var(--border)]">
