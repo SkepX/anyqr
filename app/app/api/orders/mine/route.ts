@@ -28,9 +28,11 @@ export async function GET(req: Request) {
   const onChain = r.value.filter((o) => o.datum.user === pkh);
   const onChainIds = new Set(onChain.map((o) => o.datum.order_id));
 
+  const allMeta = await registry.all();
+  const metaById = new Map(allMeta.map((m) => [m.orderId, m]));
   const active = onChain.map((o) => {
     const wire = toWireOrder(o);
-    const meta = registry.get(wire.orderId);
+    const meta = metaById.get(wire.orderId);
     return {
       ...wire,
       paymentAddress: meta?.paymentAddress ?? null,
@@ -47,8 +49,7 @@ export async function GET(req: Request) {
 
   // Registry-only orders belonging to this pkh that no longer have a UTXO
   // on chain -> "settled" (either completed by merchant or cancelled).
-  const settled = registry
-    .all()
+  const settled = allMeta
     .filter((m) => m.userPkh === pkh && !onChainIds.has(m.orderId))
     .map((m) => ({
       orderId: m.orderId,

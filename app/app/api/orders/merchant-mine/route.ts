@@ -19,11 +19,13 @@ export async function GET(req: Request) {
   if (r.isErr())
     return NextResponse.json({ error: r.error }, { status: 500 });
 
+  const allMeta = await registry.all();
+  const metaById = new Map(allMeta.map((m) => [m.orderId, m]));
   const onChain = r.value
     .filter((o) => o.datum.merchant === pkh)
     .map((o) => {
       const wire = toWireOrder(o);
-      const meta = registry.get(wire.orderId);
+      const meta = metaById.get(wire.orderId);
       return {
         orderId: wire.orderId,
         status: wire.status,
@@ -41,8 +43,7 @@ export async function GET(req: Request) {
 
   // Settled: registry has this merchant recorded but the escrow UTXO is
   // gone (completed or refunded).
-  const settled = registry
-    .all()
+  const settled = allMeta
     .filter((m) => m.merchantPkh === pkh && !onChainIds.has(m.orderId))
     .map((m) => ({
       orderId: m.orderId,

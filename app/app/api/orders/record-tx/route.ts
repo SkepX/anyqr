@@ -29,7 +29,7 @@ export async function POST(req: Request) {
     patch.buyerConfirmed = Date.now();
   }
   if (kind === "complete") patch.completeTxHash = txHash;
-  const patched = registry.patch(orderId, patch);
+  const patched = await registry.patch(orderId, patch);
   if (!patched)
     return NextResponse.json({ error: "unknown order" }, { status: 404 });
   return NextResponse.json({ ok: true });

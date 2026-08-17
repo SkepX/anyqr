@@ -21,15 +21,13 @@ export async function GET() {
   if (r.isErr())
     return NextResponse.json({ error: r.error }, { status: 500 });
   const now = Date.now();
+  const allMeta = await registry.all();
+  const metaById = new Map(allMeta.map((m) => [m.orderId, m]));
   const orders = r.value
     .map((o) => {
       const wire = toWireOrder(o);
-      // Hide stale Placed orders whose accept window has expired.
-      // They're stuck on-chain until the original buyer signs
-      // CancelUnaccepted, which we can't do for them — so we just
-      // stop showing them in the merchant queue.
       if (wire.status === "Placed" && wire.acceptDeadline < now) return null;
-      const meta = registry.get(wire.orderId);
+      const meta = metaById.get(wire.orderId);
       return {
         ...wire,
         paymentAddress: meta?.paymentAddress ?? null,

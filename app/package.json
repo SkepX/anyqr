@@ -11,13 +11,14 @@
   "dependencies": {
     "@lucid-evolution/lucid": "^0.4.29",
     "@qrpay/sdk": "file:./vendor/qrpay-sdk",
+    "@vercel/blob": "^2.8.0",
     "html5-qrcode": "^2.3.8",
     "neverthrow": "^8.2.0",
-    "zod": "^3.23.8",
     "next": "16.3.1",
     "qrcode": "^1.5.4",
     "react": "19.2.8",
-    "react-dom": "19.2.8"
+    "react-dom": "19.2.8",
+    "zod": "^3.23.8"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",

@@ -26,7 +26,7 @@ export async function POST(req: Request) {
   };
   if (!orderId || !paymentAddress)
     return NextResponse.json({ error: "missing fields" }, { status: 400 });
-  registry.put({
+  await registry.put({
     orderId,
     paymentAddress,
     payeeName: payeeName ?? null,

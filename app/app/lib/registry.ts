@@ -1,11 +1,17 @@
 import "server-only";
+import { put, head } from "@vercel/blob";
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 
 /**
- * On-disk registry of off-chain order metadata (payment address, payee name,
- * buyer confirmation). Keyed by orderId. Persisted to `.qrpay-registry.json`
- * at the project root so dev-server HMR doesn't nuke it.
+ * Off-chain order metadata (paymentAddress, txHashes, buyerConfirmed…),
+ * keyed by orderId. Backed by Vercel Blob so writes propagate across
+ * lambda instances — the previous file-based approach lived per-lambda
+ * and caused paymentAddress to blink to null for merchants whose polls
+ * bounced to a "cold" lambda without the meta.
+ *
+ * If BLOB_READ_WRITE_TOKEN isn't set (local dev / preview without a
+ * Blob store) we fall back to the in-repo JSON file so nothing breaks.
  */
 
 export interface OrderMeta {
@@ -16,69 +22,108 @@ export interface OrderMeta {
   fiatCurrency: string;
   usdcAmount: string;
   placedAt: number;
-  /** Buyer's payment key hash (hex, 28 bytes). Set at registration so we can
-   *  filter "my orders" by wallet without reading each datum. */
   userPkh?: string;
-  /** placeOrder tx hash — kept so we can list completed orders too. */
   placeTxHash?: string;
-  /** acceptOrder tx hash — set when merchant accepts. */
   acceptTxHash?: string;
-  /** Merchant's payment key hash — set when they accept. */
   merchantPkh?: string;
-  /** markPaid tx hash — set when buyer confirms receipt. */
   buyerConfirmedTxHash?: string;
-  /** complete tx hash — set when merchant claims USDC. */
   completeTxHash?: string;
   buyerConfirmed?: number;
-  // Merchant off-chain "I've sent the fiat" flag. Purely off-chain — a
-  // signal to the buyer that the merchant just tapped Pay in their bank app.
   merchantPaid?: number;
 }
 
-const FILE = join(process.cwd(), "..", ".qrpay-registry.json");
+const BLOB_KEY = "qrpay-registry.json";
+const FALLBACK_FILE = join(process.cwd(), "..", ".qrpay-registry.json");
+const useBlob = !!process.env.BLOB_READ_WRITE_TOKEN;
 
-function load(): Map<string, OrderMeta> {
-  if (!existsSync(FILE)) return new Map();
+// Short-lived in-memory cache to keep merchant polling (every 4s per
+// tab, ~1 read per poll) from hammering the Blob endpoint. Writes
+// invalidate immediately so we always read our own writes.
+const CACHE_TTL_MS = 1500;
+let cachedStore: Map<string, OrderMeta> | null = null;
+let cachedAt = 0;
+
+function loadFromFile(): Map<string, OrderMeta> {
+  if (!existsSync(FALLBACK_FILE)) return new Map();
   try {
-    const raw = JSON.parse(readFileSync(FILE, "utf8")) as OrderMeta[];
+    const raw = JSON.parse(readFileSync(FALLBACK_FILE, "utf8")) as OrderMeta[];
     return new Map(raw.map((m) => [m.orderId, m]));
   } catch {
     return new Map();
   }
 }
-
-function save(store: Map<string, OrderMeta>) {
+function saveToFile(store: Map<string, OrderMeta>) {
   try {
-    writeFileSync(FILE, JSON.stringify([...store.values()], null, 2));
+    writeFileSync(FALLBACK_FILE, JSON.stringify([...store.values()], null, 2));
   } catch {
     /* ignore */
   }
 }
 
-declare global {
-  // eslint-disable-next-line no-var
-  var __qrpayRegistry: Map<string, OrderMeta> | undefined;
+async function loadFromBlob(): Promise<Map<string, OrderMeta>> {
+  try {
+    const info = await head(BLOB_KEY);
+    const r = await fetch(info.url, { cache: "no-store" });
+    if (!r.ok) throw new Error(`blob fetch ${r.status}`);
+    const arr = (await r.json()) as OrderMeta[];
+    return new Map(arr.map((m) => [m.orderId, m]));
+  } catch (e) {
+    // First-run: Blob returns 404 for head() when key doesn't exist yet.
+    // Any other failure — return the last-known cache or an empty map.
+    if ((e as { name?: string })?.name !== "BlobNotFoundError")
+      console.warn("[registry] loadFromBlob failed:", e);
+    return cachedStore ?? new Map();
+  }
 }
-const store = globalThis.__qrpayRegistry ?? load();
-globalThis.__qrpayRegistry = store;
+
+async function saveToBlob(store: Map<string, OrderMeta>) {
+  await put(BLOB_KEY, JSON.stringify([...store.values()]), {
+    access: "public",
+    allowOverwrite: true,
+    addRandomSuffix: false,
+    contentType: "application/json",
+  });
+}
+
+async function load(): Promise<Map<string, OrderMeta>> {
+  if (!useBlob) return loadFromFile();
+  if (cachedStore && Date.now() - cachedAt < CACHE_TTL_MS) return cachedStore;
+  cachedStore = await loadFromBlob();
+  cachedAt = Date.now();
+  return cachedStore;
+}
+
+async function save(store: Map<string, OrderMeta>) {
+  if (!useBlob) {
+    saveToFile(store);
+    return;
+  }
+  await saveToBlob(store);
+  cachedStore = store;
+  cachedAt = Date.now();
+}
 
 export const registry = {
-  put(m: OrderMeta) {
+  async put(m: OrderMeta) {
+    const store = await load();
     store.set(m.orderId, m);
-    save(store);
+    await save(store);
   },
-  get(orderId: string): OrderMeta | null {
+  async get(orderId: string): Promise<OrderMeta | null> {
+    const store = await load();
     return store.get(orderId) ?? null;
   },
-  all(): OrderMeta[] {
+  async all(): Promise<OrderMeta[]> {
+    const store = await load();
     return [...store.values()];
   },
-  patch(orderId: string, patch: Partial<OrderMeta>) {
+  async patch(orderId: string, patch: Partial<OrderMeta>) {
+    const store = await load();
     const cur = store.get(orderId);
     if (!cur) return null;
     const next = { ...cur, ...patch };
     store.set(orderId, next);
-    save(store);
+    await save(store);
     return next;
   },
 };

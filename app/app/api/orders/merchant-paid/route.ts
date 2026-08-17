@@ -12,7 +12,7 @@ export async function POST(req: Request) {
   const { orderId } = (await req.json()) as { orderId: string };
   if (!orderId)
     return NextResponse.json({ error: "orderId required" }, { status: 400 });
-  const r = registry.patch(orderId, { merchantPaid: Date.now() });
+  const r = await registry.patch(orderId, { merchantPaid: Date.now() });
   if (!r) return NextResponse.json({ error: "unknown order" }, { status: 404 });
   return NextResponse.json({ ok: true, merchantPaid: r.merchantPaid });
 }

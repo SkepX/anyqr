@@ -12,7 +12,7 @@ export async function POST(req: Request) {
   };
   if (!orderId || !txHash)
     return NextResponse.json({ error: "missing fields" }, { status: 400 });
-  const patched = registry.patch(orderId, {
+  const patched = await registry.patch(orderId, {
     buyerConfirmed: Date.now(),
     buyerConfirmedTxHash: txHash,
   });
