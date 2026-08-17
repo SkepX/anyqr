@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { put } from "@vercel/blob";
 import { readOnly } from "../../../lib/server";
 
 export const dynamic = "force-dynamic";
@@ -26,6 +27,20 @@ export async function POST(req: Request) {
     // Pass the node's message through verbatim — the client's retry
     // matchers key off its wording.
     const msg = String(e instanceof Error ? e.message : e);
+    // Capture the exact rejected bytes for offline diagnosis (testnet
+    // debug aid; a signed tx is public material by nature).
+    try {
+      await put(
+        `debug/rejected-${Date.now()}.json`,
+        JSON.stringify({ msg: msg.slice(0, 1500), cbor }),
+        {
+          access: "public",
+          addRandomSuffix: false,
+          contentType: "application/json",
+          cacheControlMaxAge: 60,
+        },
+      );
+    } catch {}
     return NextResponse.json({ error: msg }, { status: 400 });
   }
 }

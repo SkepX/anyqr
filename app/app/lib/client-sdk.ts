@@ -149,7 +149,63 @@ export async function signAndSubmitPrepared(
       live as unknown as Parameters<typeof lucid.selectWallet.fromAPI>[0],
     );
   }
-  const rebound = lucid.fromTx(prepared.toCBOR());
+  // Some browser sessions have produced script txs whose serialized
+  // body was MISSING the collateral return — every submit door rejects
+  // those with CollateralContainsNonADA, while the identical build in
+  // Node carries the field. Detect and repair BEFORE signing (the
+  // repair changes the txid, so it must precede the signature).
+  let unsignedCbor = prepared.toCBOR();
+  try {
+    const mod = (await import("@lucid-evolution/lucid")) as unknown as {
+      CML: typeof import("@lucid-evolution/lucid").CML;
+      assetsToValue: (assets: Record<string, bigint>) => unknown;
+    };
+    const { CML, assetsToValue } = mod;
+    const parsed = CML.Transaction.from_cbor_hex(unsignedCbor);
+    const body = parsed.body();
+    const cols = body.collateral_inputs();
+    if (cols && cols.len() > 0 && !body.collateral_return()) {
+      console.warn(
+        "[submit] built tx MISSING collateral_return — repairing before sign",
+      );
+      const walletUtxos = await lucid.wallet().getUtxos();
+      const assets: Record<string, bigint> = {};
+      for (let i = 0; i < cols.len(); i++) {
+        const ci = cols.get(i);
+        const id = ci.transaction_id().to_hex();
+        const idx = Number(ci.index());
+        const hit = walletUtxos.find(
+          (u) => u.txHash === id && u.outputIndex === idx,
+        );
+        if (!hit) throw new Error("collateral input not in wallet view");
+        for (const [unit, qty] of Object.entries(hit.assets))
+          assets[unit] = (assets[unit] ?? BigInt(0)) + qty;
+      }
+      const totalCol = body.total_collateral() ?? BigInt(5_000_000);
+      assets.lovelace = (assets.lovelace ?? BigInt(0)) - totalCol;
+      const addr = await lucid.wallet().address();
+      const out = CML.TransactionOutput.new(
+        CML.Address.from_bech32(addr),
+        assetsToValue(assets) as Parameters<typeof CML.TransactionOutput.new>[1],
+      );
+      body.set_collateral_return(out);
+      body.set_total_collateral(totalCol);
+      const rebuilt = CML.Transaction.new(
+        body,
+        parsed.witness_set(),
+        true,
+        parsed.auxiliary_data(),
+      );
+      unsignedCbor = rebuilt.to_cbor_hex();
+      console.log("[submit] collateral_return repaired");
+    }
+  } catch (e) {
+    console.warn(
+      "[submit] collateral inspection failed (continuing as built):",
+      String((e as { message?: string })?.message ?? e).slice(0, 160),
+    );
+  }
+  const rebound = lucid.fromTx(unsignedCbor);
   console.log("[submit] requesting wallet signature");
   const signed = await withStepTimeout(
     rebound.sign.withWallet().complete(),
