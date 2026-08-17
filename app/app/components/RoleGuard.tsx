@@ -17,13 +17,26 @@ export function RoleGuard({
   /** Custom pre-connect UI. Falls back to a generic prompt if omitted. */
   connectPrompt?: React.ReactNode;
 }) {
-  const { conn } = useWalletConnect();
+  const { conn, restoring } = useWalletConnect();
   const { role, setRole, clearRole } = useWalletRole(conn?.address);
 
   // Auto-assign role on first connect if none set.
   useEffect(() => {
     if (conn && role === null) setRole(expects);
   }, [conn, role, expects, setRole]);
+
+  // While auto-reconnect is in flight, don't render the onboarding — it
+  // would flash the user out of a valid session for a second.
+  if (restoring) {
+    return (
+      <main className="flex-1 flex flex-col">
+        <TopBar />
+        <div className="flex-1 flex items-center justify-center px-6">
+          <span className="inline-block w-6 h-6 rounded-full border-2 border-[color:var(--accent)] border-t-transparent animate-spin" />
+        </div>
+      </main>
+    );
+  }
 
   if (!conn) {
     return (

@@ -83,6 +83,9 @@ interface WalletState {
   conn: Connection | null;
   installed: DetectedWallet[];
   busy: boolean;
+  /** True while we're attempting to auto-reconnect from localStorage on mount.
+   *  Consumers should show a spinner instead of a "connect" prompt during this. */
+  restoring: boolean;
   error: string | null;
   connect: (walletKey: string) => Promise<Connection>;
   disconnect: () => void;
@@ -111,6 +114,7 @@ function useWalletConnectInternal(): WalletState {
   const [conn, setConn] = useState<Connection | null>(null);
   const [installed, setInstalled] = useState<DetectedWallet[]>([]);
   const [busy, setBusy] = useState(false);
+  const [restoring, setRestoring] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   // Detect on mount + when window.cardano might change (dev)
@@ -121,24 +125,51 @@ function useWalletConnectInternal(): WalletState {
     return () => clearInterval(iv);
   }, []);
 
-  // Auto-reconnect on mount if user was connected before
+  // Auto-reconnect on mount if user was connected before.
+  // Wallet extensions inject window.cardano asynchronously so we poll for
+  // the specific wallet's injection for a short window before giving up.
   useEffect(() => {
-    if (typeof window === "undefined") return;
+    if (typeof window === "undefined") {
+      setRestoring(false);
+      return;
+    }
     const saved = localStorage.getItem(STORAGE_KEY);
-    if (!saved) return;
+    if (!saved) {
+      setRestoring(false);
+      return;
+    }
+    let cancelled = false;
     (async () => {
       try {
         const parsed = JSON.parse(saved) as { key: string };
-        const inj = readInjected()[parsed.key];
-        if (!inj) return;
+        // Wait up to 4s for the specific wallet extension to inject itself.
+        const start = Date.now();
+        let inj = readInjected()[parsed.key];
+        while (!inj && Date.now() - start < 4000) {
+          await new Promise((r) => setTimeout(r, 150));
+          if (cancelled) return;
+          inj = readInjected()[parsed.key];
+        }
+        if (!inj) {
+          // Extension isn't installed anymore. Keep the saved key so the user
+          // can re-authorise; don't blow away localStorage.
+          setRestoring(false);
+          return;
+        }
         const api = await inj.enable();
+        if (cancelled) return;
         const net = await api.getNetworkId();
         const addr = await getBech32Address(api, net);
         setConn({ key: parsed.key, address: addr, networkId: net });
       } catch {
         localStorage.removeItem(STORAGE_KEY);
+      } finally {
+        if (!cancelled) setRestoring(false);
       }
     })();
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   const connect = useCallback(async (walletKey: string) => {
@@ -176,8 +207,8 @@ function useWalletConnectInternal(): WalletState {
   }, [conn]);
 
   return useMemo(
-    () => ({ conn, installed, busy, error, connect, disconnect, getApi }),
-    [conn, installed, busy, error, connect, disconnect, getApi],
+    () => ({ conn, installed, busy, restoring, error, connect, disconnect, getApi }),
+    [conn, installed, busy, restoring, error, connect, disconnect, getApi],
   );
 }
 
