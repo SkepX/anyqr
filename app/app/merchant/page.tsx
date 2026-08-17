@@ -284,13 +284,13 @@ function MerchantInner() {
               <div>
                 <div className="eyebrow mb-1">Routed</div>
                 <div className="font-mono text-[color:var(--text)]">
-                  ₹{earnings.fiat.toFixed(2)}
+                  ${(earnings.fiat / FAIR_RATE_INR_PER_USDC).toFixed(2)}
                 </div>
               </div>
               <div>
                 <div className="eyebrow mb-1">Earnings 2%</div>
                 <div className="font-mono text-[color:var(--accent-strong)]">
-                  ₹{earnings.spread.toFixed(2)}
+                  ${(earnings.spread / FAIR_RATE_INR_PER_USDC).toFixed(2)}
                 </div>
               </div>
             </div>
@@ -392,17 +392,17 @@ function MerchantOnboarding() {
           ≈ ₹97.65). That spread is your profit for fronting the fiat.
         </div>
         <div className="text-sm font-mono">
-          Example: buyer scans ₹500 ($5.12) QR
+          Example: buyer scans a $5.12 (₹500) QR
           <br />
-          You pay ₹500 ($5.12) to the shop from your bank
+          You pay $5.12 (₹500) to the shop from your bank
           <br />
           You receive{" "}
           <span className="text-[color:var(--accent-strong)]">
             5.222 tUSDM
           </span>{" "}
-          (worth ₹500 + ₹10 spread / $5.12 + $0.10)
+          worth $5.22 ($5.12 + $0.10 spread)
           <br />
-          Your profit ≈ ₹10 ($0.10) per trade
+          Your profit ≈ $0.10 (₹10) per trade
         </div>
       </div>
 
