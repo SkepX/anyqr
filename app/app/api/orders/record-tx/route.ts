@@ -24,8 +24,16 @@ export async function POST(req: Request) {
   if (kind === "place") patch.placeTxHash = txHash;
   if (kind === "accept") {
     patch.acceptTxHash = txHash;
-    if (merchantPkh) patch.merchantPkh = merchantPkh;
     if (merchantAddress) patch.merchantAddress = merchantAddress;
+    // Never depend on client state for the merchant's identity — derive
+    // it from the address (earnings matching keys off merchantPkh).
+    if (merchantPkh) patch.merchantPkh = merchantPkh;
+    else if (merchantAddress) {
+      try {
+        const { paymentCredentialOf } = await import("@lucid-evolution/lucid");
+        patch.merchantPkh = paymentCredentialOf(merchantAddress).hash;
+      } catch {}
+    }
   }
   if (kind === "markPaid") {
     patch.buyerConfirmedTxHash = txHash;

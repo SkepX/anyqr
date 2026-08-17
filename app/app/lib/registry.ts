@@ -65,7 +65,15 @@ function saveToFile(store: Map<string, OrderMeta>) {
   }
 }
 
-/* ---------------- per-order blob primitives -------------------------- */
+/* ---------------- append-only event primitives ----------------------- */
+/* Read-modify-write of a shared file loses updates: two lambdas patch
+ * the same order within the CDN's staleness window and the later write
+ * erases the earlier one's fields (observed: merchant identity vanished
+ * from completed orders, freezing the earnings tally). Every patch is
+ * now its OWN immutable file — `qrpay-orders/{id}/{ts}-{rand}.json` —
+ * and reads merge all of them chronologically. Concurrent writes can no
+ * longer erase anything. A `null` field value means "clear this key".
+ * Legacy single-file and per-order-blob formats remain read-only bases. */
 
 // Blob URLs are CDN-cached; a ts param forces a fresh read.
 async function fetchJson(url: string): Promise<unknown | null> {
@@ -74,6 +82,29 @@ async function fetchJson(url: string): Promise<unknown | null> {
   return r.json();
 }
 
+type MetaEvent = Partial<Record<keyof OrderMeta, unknown>> & { orderId: string };
+
+function mergeEvent(base: Partial<OrderMeta>, ev: MetaEvent): Partial<OrderMeta> {
+  const out: Record<string, unknown> = { ...base };
+  for (const [k, v] of Object.entries(ev)) {
+    if (v === null) delete out[k];
+    else out[k] = v;
+  }
+  return out as Partial<OrderMeta>;
+}
+
+async function writeEvent(orderId: string, ev: Partial<OrderMeta>): Promise<void> {
+  const name = `${PREFIX}${orderId}/${Date.now()}-${crypto.randomUUID().slice(0, 8)}.json`;
+  await put(name, JSON.stringify({ ...ev, orderId }), {
+    access: "public",
+    allowOverwrite: false,
+    addRandomSuffix: false,
+    contentType: "application/json",
+    cacheControlMaxAge: 60,
+  });
+}
+
+/** Read the v2 single-blob base for an order (read-only legacy). */
 async function readOrderBlob(orderId: string): Promise<OrderMeta | null> {
   try {
     const info = await head(`${PREFIX}${orderId}.json`);
@@ -81,16 +112,6 @@ async function readOrderBlob(orderId: string): Promise<OrderMeta | null> {
   } catch {
     return null; // BlobNotFound and friends
   }
-}
-
-async function writeOrderBlob(m: OrderMeta): Promise<void> {
-  await put(`${PREFIX}${m.orderId}.json`, JSON.stringify(m), {
-    access: "public",
-    allowOverwrite: true,
-    addRandomSuffix: false,
-    contentType: "application/json",
-    cacheControlMaxAge: 60, // minimum allowed — keep CDN staleness short
-  });
 }
 
 /** One-shot legacy read: entries from the old single-array blob that
@@ -116,10 +137,26 @@ async function loadAll(): Promise<Map<string, OrderMeta>> {
   const store = await readLegacy();
   try {
     const { blobs } = await list({ prefix: PREFIX });
-    const metas = await Promise.all(
-      blobs.map(async (b) => (await fetchJson(b.url)) as OrderMeta | null),
+    // v2 bases: qrpay-orders/{id}.json — apply before events.
+    const bases = blobs.filter((b) => /^qrpay-orders\/[^/]+\.json$/.test(b.pathname));
+    // v3 events: qrpay-orders/{id}/{ts}-{rand}.json — chronological by name.
+    const events = blobs
+      .filter((b) => /^qrpay-orders\/[^/]+\/.+\.json$/.test(b.pathname))
+      .sort((a, b) => a.pathname.localeCompare(b.pathname));
+    const baseMetas = await Promise.all(
+      bases.map(async (b) => (await fetchJson(b.url)) as OrderMeta | null),
     );
-    for (const m of metas) if (m?.orderId) store.set(m.orderId, m); // per-order wins
+    for (const m of baseMetas) if (m?.orderId) store.set(m.orderId, m);
+    const evs = await Promise.all(
+      events.map(async (b) => (await fetchJson(b.url)) as MetaEvent | null),
+    );
+    for (const ev of evs) {
+      if (!ev?.orderId) continue;
+      store.set(
+        ev.orderId,
+        mergeEvent(store.get(ev.orderId) ?? {}, ev) as OrderMeta,
+      );
+    }
   } catch (e) {
     console.warn("[registry] list failed:", e);
     if (cachedAll) return cachedAll;
@@ -143,15 +180,24 @@ export const registry = {
       saveToFile(store);
       return;
     }
-    await writeOrderBlob(m);
+    await writeEvent(m.orderId, m);
     rememberLocally(m);
   },
 
   async get(orderId: string): Promise<OrderMeta | null> {
     if (!useBlob) return loadFromFile().get(orderId) ?? null;
-    const own = await readOrderBlob(orderId);
-    if (own) return own;
-    return (await readLegacy()).get(orderId) ?? null;
+    // Base (legacy formats), then replay this order's events.
+    let acc: Partial<OrderMeta> | null =
+      (await readOrderBlob(orderId)) ?? (await readLegacy()).get(orderId) ?? null;
+    try {
+      const { blobs } = await list({ prefix: `${PREFIX}${orderId}/` });
+      blobs.sort((a, b) => a.pathname.localeCompare(b.pathname));
+      for (const b of blobs) {
+        const ev = (await fetchJson(b.url)) as MetaEvent | null;
+        if (ev?.orderId) acc = mergeEvent(acc ?? {}, ev);
+      }
+    } catch {}
+    return acc && acc.orderId ? (acc as OrderMeta) : null;
   },
 
   async all(): Promise<OrderMeta[]> {
@@ -171,8 +217,8 @@ export const registry = {
     }
     const cur = await this.get(orderId);
     if (!cur) return null;
-    const next = { ...cur, ...patch };
-    await writeOrderBlob(next); // touches ONLY this order's file
+    await writeEvent(orderId, patch); // its own immutable file — no clobber
+    const next = mergeEvent(cur, { ...patch, orderId }) as OrderMeta;
     rememberLocally(next);
     return next;
   },

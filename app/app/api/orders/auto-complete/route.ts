@@ -96,8 +96,10 @@ export async function POST(req: Request) {
     const rec = await recoverMerchantAddress(meta).catch(() => null);
     if (rec) {
       merchantAddress = rec.merchantAddress;
+      const { paymentCredentialOf } = await import("@lucid-evolution/lucid");
       await registry.patch(orderId, {
         merchantAddress: rec.merchantAddress,
+        merchantPkh: paymentCredentialOf(rec.merchantAddress).hash,
         acceptTxHash: rec.acceptTxHash,
       });
     }

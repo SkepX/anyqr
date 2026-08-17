@@ -43,8 +43,20 @@ export async function GET(req: Request) {
 
   // Settled: registry has this merchant recorded but the escrow UTXO is
   // gone (completed or refunded).
+  const { paymentCredentialOf } = await import("@lucid-evolution/lucid");
+  const addrPkh = (a?: string) => {
+    try {
+      return a ? paymentCredentialOf(a).hash : null;
+    } catch {
+      return null;
+    }
+  };
   const settled = allMeta
-    .filter((m) => m.merchantPkh === pkh && !onChainIds.has(m.orderId))
+    .filter(
+      (m) =>
+        (m.merchantPkh === pkh || addrPkh(m.merchantAddress) === pkh) &&
+        !onChainIds.has(m.orderId),
+    )
     .map((m) => ({
       orderId: m.orderId,
       status: "Settled",

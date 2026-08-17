@@ -23,7 +23,10 @@ export async function POST(req: Request) {
   if (revert) {
     const cur = await registry.get(orderId);
     if (cur && !cur.buyerConfirmedTxHash && cur.buyerConfirmed)
-      await registry.patch(orderId, { buyerConfirmed: undefined });
+      // null = clear-this-field in the event log.
+      await registry.patch(orderId, {
+        buyerConfirmed: null,
+      } as unknown as Partial<import("../../../lib/registry").OrderMeta>);
     return NextResponse.json({ ok: true });
   }
   const patched = await registry.patch(
