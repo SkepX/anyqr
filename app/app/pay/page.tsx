@@ -5,6 +5,7 @@ import { COUNTRIES } from "../lib/countries";
 import {
   buildClient,
   isStaleUtxoError,
+  refreshWalletView,
   signAndSubmitPrepared,
   withTxLock,
 } from "../lib/client-sdk";
@@ -279,6 +280,8 @@ function PayInner() {
           status: string;
           merchantPaid?: number | null;
           disputeDeadline?: number;
+          acceptTxHash?: string | null;
+          buyerConfirmedTxHash?: string | null;
         }>;
       };
       // An entirely-empty list is infrastructure noise (a lambda whose
@@ -344,12 +347,17 @@ function PayInner() {
       }
       missCount = 0;
       if (!seenOnChain) setSeenOnChain(true);
-      if (me.status === "Accepted" && status === "placed") setStatus("accepted");
-      if (me.status === "Accepted" && me.merchantPaid && status === "accepted") {
+      // Stage transitions fire on the registry's instant signals (tx
+      // hashes recorded at submit time) as well as on-chain status —
+      // waiting a full block per stage made each step feel stuck for
+      // 30-60s.
+      const accepted = me.status === "Accepted" || !!me.acceptTxHash;
+      if (accepted && status === "placed") setStatus("accepted");
+      if (accepted && me.merchantPaid && status === "accepted") {
         setStatus("merchant_paid");
       }
       if (
-        me.status === "Paid" &&
+        (me.status === "Paid" || !!me.buyerConfirmedTxHash) &&
         (status === "merchant_paid" || status === "accepted" || status === "confirming")
       ) {
         setStatus("paid");
@@ -520,6 +528,15 @@ function PayInner() {
         console.log("[markPaid] building tx for order", orderId);
         const { markPaid } = await import("@qrpay/sdk");
         const client = await buildClient(api, 8);
+        // The UI now shows this button from registry signals, possibly
+        // before the accept is in a block — the on-chain state must be
+        // Accepted before markPaid can build, and the coin snapshot
+        // must be re-taken after any wait.
+        await client.waitForStatus(orderId, ["Accepted", "Paid"], {
+          timeoutMs: 90_000,
+          intervalMs: 3_000,
+        });
+        await refreshWalletView(client.cfg.lucid);
         const prepared = await markPaid(client).prepare({ orderId, disputeWindowMin: 1 });
         if (prepared.isErr()) {
           console.error("[markPaid] SDK error", prepared.error);

@@ -424,9 +424,26 @@ function MerchantInner() {
   // disappearing".
   const mine = (o: WireOrder) =>
     !!merchantPkh && (!o.merchant || o.merchant === merchantPkh);
-  const placed = all.filter((o) => o.status === "Placed");
-  const accepted = all.filter((o) => o.status === "Accepted" && mine(o));
-  const paid = all.filter((o) => o.status === "Paid" && mine(o));
+  const placed = all.filter((o) => o.status === "Placed" && !o.acceptTxHash);
+  // Buyer's confirmation is known from the registry the moment they tap
+  // "Yes, received" — waiting for the chain to show status Paid made
+  // this section appear a block late, with most of the dispute
+  // countdown already burned. The dispute deadline for an optimistic
+  // row is buyerConfirmed + 60s, which matches the datum (both anchor
+  // at the buyer's click).
+  const accepted = all.filter(
+    (o) =>
+      (o.status === "Accepted" || (o.status === "Placed" && o.acceptTxHash)) &&
+      !o.buyerConfirmed &&
+      mine(o),
+  );
+  const paid = all
+    .filter((o) => (o.status === "Paid" || !!o.buyerConfirmed) && mine(o))
+    .map((o) =>
+      o.status === "Paid"
+        ? o
+        : { ...o, disputeDeadline: (o.buyerConfirmed ?? Date.now()) + 60_000 },
+    );
 
   // Clean up optimistic accepts once on-chain confirms
   useEffect(() => {
