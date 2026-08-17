@@ -293,7 +293,10 @@ function PayInner() {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ orderId, txHash: r.value.txHash }),
       });
-      setStatus("paid");
+      // Payment confirmed on-chain — bounce the buyer back to their
+      // wallet home. The merchant will auto-claim after the dispute
+      // window; there's nothing left for the buyer to do here.
+      router.push(`/home?ccy=${ccyCode}&paid=${orderId}`);
     } catch (e) {
       console.error("[markPaid] failed", e);
       setStatus("merchant_paid");

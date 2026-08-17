@@ -115,22 +115,80 @@ export function useWalletConnect(): WalletState {
   return ctx;
 }
 
-// Cache the enabled CIP-30 api handle per wallet key. Some wallets
-// (Lace especially) treat each `enable()` call as a fresh session
-// that invalidates prior handles — if two `enable()` calls happen
-// close together (e.g. concurrent signings), the older channel dies
-// mid-flight and Lucid surfaces "RemoteApiShutdownError". Caching
-// the handle guarantees we only ever hold one live session.
+// Lace kills its CIP-30 channel after short idle periods (seconds),
+// so any handle we hold across user idle time is likely stale by the
+// time we sign with it. Lucid's tx pipeline calls several api methods
+// in sequence (getUsedAddresses -> signTx -> submitTx) and Lace can
+// tear the channel down between any two of them.
+//
+// The fix: hand Lucid a Proxy that re-calls `enable()` on demand and
+// transparently retries on RemoteApiShutdownError. Lucid never sees
+// the reconnect; the underlying signing prompt still appears once.
 const enabledApis = new Map<string, Promise<Cip30Api>>();
 export function resetEnabledApi(key: string) {
   console.log(`[wallet] resetEnabledApi ${key}`);
   enabledApis.delete(key);
 }
-/** True if the error came from a Lucid/CIP-30 channel that died
- *  between enable() and the signing call — Lace is the usual culprit. */
 export function isWalletChannelClosed(e: unknown): boolean {
   const s = String(e instanceof Error ? e.message : e);
-  return s.includes("RemoteApiShutdown") || s.includes("channel") && s.includes("shutdown");
+  return (
+    s.includes("RemoteApiShutdown") ||
+    (s.includes("channel") && s.includes("shutdown")) ||
+    s.includes("Extension context invalidated")
+  );
+}
+
+async function callFreshApi<T>(
+  walletKey: string,
+  fn: (api: Cip30Api) => Promise<T>,
+): Promise<T> {
+  const inj = () => readInjected()[walletKey];
+  const enable = () => {
+    let p = enabledApis.get(walletKey);
+    if (!p) {
+      const injection = inj();
+      if (!injection) return Promise.reject(new Error(`${walletKey} not installed`));
+      p = injection.enable();
+      enabledApis.set(walletKey, p);
+      p.catch(() => enabledApis.delete(walletKey));
+    }
+    return p;
+  };
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const api = await enable();
+      return await fn(api);
+    } catch (e) {
+      if (isWalletChannelClosed(e) && attempt === 0) {
+        console.warn(`[wallet] method call hit dead channel, re-enabling ${walletKey}`);
+        enabledApis.delete(walletKey);
+        continue;
+      }
+      throw e;
+    }
+  }
+  throw new Error("unreachable");
+}
+
+/** Build a CIP-30 api handle that transparently reconnects to the
+ *  wallet extension when the underlying channel dies mid-call.
+ *  Uses a Proxy so ALL methods (including Lucid-only ones like
+ *  getUtxos / getCollateral / getRewardAddresses) get the same
+ *  reconnect behavior. */
+function makeResilientApi(walletKey: string): Cip30Api {
+  return new Proxy({} as Cip30Api, {
+    get(_target, prop: string) {
+      return (...args: unknown[]) =>
+        callFreshApi(walletKey, (api) => {
+          const fn = (api as unknown as Record<string, unknown>)[prop];
+          if (typeof fn !== "function")
+            throw new Error(`api.${prop} is not a function`);
+          return Promise.resolve(
+            (fn as (...a: unknown[]) => unknown).apply(api, args),
+          );
+        });
+    },
+  });
 }
 
 function useWalletConnectInternal(): WalletState {
@@ -259,28 +317,8 @@ function useWalletConnectInternal(): WalletState {
   }, [conn]);
 
   const getApi = useCallback(async (): Promise<Cip30Api | null> => {
-    if (!conn) {
-      console.log(`[wallet] getApi called with no conn`);
-      return null;
-    }
-    const inj = readInjected()[conn.key];
-    if (!inj) {
-      console.warn(`[wallet] getApi: ${conn.key} not injected`);
-      return null;
-    }
-    let p = enabledApis.get(conn.key);
-    if (!p) {
-      console.log(`[wallet] getApi: cache miss, calling enable() for ${conn.key}`);
-      p = inj.enable();
-      enabledApis.set(conn.key, p);
-      p.catch((e) => {
-        console.warn(`[wallet] enable() rejected for ${conn.key}`, e);
-        resetEnabledApi(conn.key);
-      });
-    } else {
-      console.log(`[wallet] getApi: cache hit for ${conn.key}`);
-    }
-    return p;
+    if (!conn) return null;
+    return makeResilientApi(conn.key);
   }, [conn]);
 
   return useMemo(

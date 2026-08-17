@@ -764,20 +764,29 @@ function CompleteButton({
   }, []);
   const ready = now > o.disputeDeadline;
   const secsLeft = Math.max(0, Math.ceil((o.disputeDeadline - now) / 1000));
+  const usdc = (Number(o.usdcAmount) / 1_000_000).toFixed(3);
   if (!ready) {
     const mm = Math.floor(secsLeft / 60);
     const ss = (secsLeft % 60).toString().padStart(2, "0");
     return (
-      <span className="pill">
-        auto-claim in {mm}:{ss}
-      </span>
+      <div className="text-right">
+        <div className="text-xs text-[color:var(--text-muted)]">
+          Funds release in
+        </div>
+        <div className="font-mono text-base font-medium">
+          {mm}:{ss}
+        </div>
+        <div className="text-xs text-[color:var(--accent-strong)] mt-0.5">
+          +{usdc} tUSDM
+        </div>
+      </div>
     );
   }
   return (
     <button onClick={onClick} disabled={busy} className="btn btn-primary">
       <span className="inline-flex items-center gap-2">
         <span className="inline-block w-3.5 h-3.5 rounded-full border-2 border-black border-t-transparent animate-spin" />
-        Auto-claiming…
+        Claiming…
       </span>
     </button>
   );
