@@ -20,20 +20,28 @@ export async function GET() {
   const r = await client.listOrders();
   if (r.isErr())
     return NextResponse.json({ error: r.error }, { status: 500 });
-  const orders = r.value.map((o) => {
-    const wire = toWireOrder(o);
-    const meta = registry.get(wire.orderId);
-    return {
-      ...wire,
-      paymentAddress: meta?.paymentAddress ?? null,
-      payeeName: meta?.payeeName ?? null,
-      buyerConfirmed: meta?.buyerConfirmed ?? null,
-      merchantPaid: meta?.merchantPaid ?? null,
-      placeTxHash: meta?.placeTxHash ?? null,
-      acceptTxHash: meta?.acceptTxHash ?? null,
-      buyerConfirmedTxHash: meta?.buyerConfirmedTxHash ?? null,
-      completeTxHash: meta?.completeTxHash ?? null,
-    };
-  });
+  const now = Date.now();
+  const orders = r.value
+    .map((o) => {
+      const wire = toWireOrder(o);
+      // Hide stale Placed orders whose accept window has expired.
+      // They're stuck on-chain until the original buyer signs
+      // CancelUnaccepted, which we can't do for them — so we just
+      // stop showing them in the merchant queue.
+      if (wire.status === "Placed" && wire.acceptDeadline < now) return null;
+      const meta = registry.get(wire.orderId);
+      return {
+        ...wire,
+        paymentAddress: meta?.paymentAddress ?? null,
+        payeeName: meta?.payeeName ?? null,
+        buyerConfirmed: meta?.buyerConfirmed ?? null,
+        merchantPaid: meta?.merchantPaid ?? null,
+        placeTxHash: meta?.placeTxHash ?? null,
+        acceptTxHash: meta?.acceptTxHash ?? null,
+        buyerConfirmedTxHash: meta?.buyerConfirmedTxHash ?? null,
+        completeTxHash: meta?.completeTxHash ?? null,
+      };
+    })
+    .filter((o) => o !== null);
   return NextResponse.json({ orders });
 }
