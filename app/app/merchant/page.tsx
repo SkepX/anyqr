@@ -11,6 +11,13 @@ import type { WireOrder } from "../lib/wire";
 const SCAN_URL = "https://preprod.cardanoscan.io/transaction/";
 const FAIR_RATE_INR_PER_USDC = 97.65; // "fair" reference rate
 
+// Track auto-complete attempts at module scope so a component remount
+// does not trigger a second signing attempt for the same order — the
+// old wallet API handle would already be invalidated by the extension,
+// producing a "RemoteApiShutdownError" that surfaces as the red error
+// card on the merchant page.
+const AUTO_COMPLETE_ATTEMPTED = new Set<string>();
+
 export default function MerchantPage() {
   return (
     <RoleGuard expects="merchant" connectPrompt={<MerchantOnboarding />}>
@@ -27,7 +34,6 @@ function MerchantInner() {
   const [busy, setBusy] = useState<Record<string, boolean>>({});
   const [error, setError] = useState<string | null>(null);
   const [pendingAccepts, setPendingAccepts] = useState<Record<string, WireOrder>>({});
-  const [autoCompleted, setAutoCompleted] = useState<Set<string>>(new Set());
 
   // Derive merchant pkh from connected wallet
   useEffect(() => {
@@ -108,14 +114,22 @@ function MerchantInner() {
     return () => clearInterval(iv);
   }, [load]);
 
-  // Sign accept/complete client-side with connected wallet
-  const act = async (kind: "accept" | "complete", order: WireOrder) => {
+  // Sign accept/complete client-side with connected wallet.
+  // `silent` mode (used by auto-complete) suppresses the red error card
+  // so a stale-handle failure in the background doesn't scream at the
+  // merchant — the next poll will retry via `mine()` if the order still
+  // sits past its deadline.
+  const act = async (
+    kind: "accept" | "complete",
+    order: WireOrder,
+    silent = false,
+  ) => {
     if (!conn) {
-      setError("Connect a wallet to act as merchant.");
+      if (!silent) setError("Connect a wallet to act as merchant.");
       return;
     }
     setBusy((b) => ({ ...b, [order.orderId]: true }));
-    setError(null);
+    if (!silent) setError(null);
     if (kind === "accept") {
       setPendingAccepts((p) => ({
         ...p,
@@ -166,7 +180,15 @@ function MerchantInner() {
           return rest;
         });
       }
-      setError(String(e instanceof Error ? e.message : e));
+      const msg = String(e instanceof Error ? e.message : e);
+      if (silent) {
+        // Auto-complete failure — log but don't spam the user with a red
+        // card. The order stays in AUTO_COMPLETE_ATTEMPTED so we don't
+        // pop the wallet again on every poll. Refresh to retry manually.
+        console.warn("[merchant] auto-complete failed:", msg);
+      } else {
+        setError(msg);
+      }
     } finally {
       setBusy((b) => ({ ...b, [order.orderId]: false }));
     }
@@ -175,11 +197,17 @@ function MerchantInner() {
   const markMerchantPaid = async (orderId: string) => {
     setBusy((b) => ({ ...b, [orderId]: true }));
     setError(null);
+    // Hard client-side timeout: if the network hangs, at least clear
+    // the spinner and surface the failure rather than leaving the
+    // button stuck on "Sending…" forever.
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 8000);
     try {
       const res = await fetch("/api/orders/merchant-paid", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ orderId }),
+        signal: controller.signal,
       });
       if (!res.ok) throw new Error(`merchant-paid failed: ${res.status}`);
       setOrders((prev) =>
@@ -191,6 +219,7 @@ function MerchantInner() {
     } catch (e) {
       setError(String(e instanceof Error ? e.message : e));
     } finally {
+      clearTimeout(timeout);
       setBusy((b) => ({ ...b, [orderId]: false }));
     }
   };
@@ -234,14 +263,16 @@ function MerchantInner() {
     });
   }, [orders]);
 
-  // Auto-fire complete on any Paid order past its dispute deadline
+  // Auto-fire complete on any Paid order past its dispute deadline.
+  // Guarded by a module-level Set so a remount can't retry the same
+  // order (which would use a stale wallet handle and error out).
   useEffect(() => {
     const now = Date.now();
     for (const o of paid) {
-      if (autoCompleted.has(o.orderId)) continue;
+      if (AUTO_COMPLETE_ATTEMPTED.has(o.orderId)) continue;
       if (now <= o.disputeDeadline) continue;
-      setAutoCompleted((s) => new Set(s).add(o.orderId));
-      void act("complete", o);
+      AUTO_COMPLETE_ATTEMPTED.add(o.orderId);
+      void act("complete", o, true);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [paid.map((o) => o.orderId + ":" + o.disputeDeadline).join(",")]);
