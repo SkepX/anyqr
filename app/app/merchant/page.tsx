@@ -21,6 +21,14 @@ import type { WireOrder } from "../lib/wire";
 const SCAN_URL = "https://preprod.cardanoscan.io/transaction/";
 const FAIR_RATE_INR_PER_USDC = 97.65; // "fair" reference rate
 
+/** Small test orders earn fractions of a cent — a fixed 2-decimal
+ *  display floors them to $0.00 and reads as "not working". Show up
+ *  to 4 decimals when the value is positive but under a cent. */
+function fmtUsd(v: number): string {
+  if (v > 0 && v < 0.01) return `$${v.toFixed(4)}`;
+  return `$${v.toFixed(2)}`;
+}
+
 // Track auto-complete attempts at module scope so a component remount
 // does not trigger a second signing attempt for the same order — the
 // old wallet API handle would already be invalidated by the extension,
@@ -572,13 +580,13 @@ function MerchantInner() {
               <div>
                 <div className="eyebrow mb-1">Routed</div>
                 <div className="font-mono text-[color:var(--text)]">
-                  ${(earnings.fiat / FAIR_RATE_INR_PER_USDC).toFixed(2)}
+                  {fmtUsd(earnings.fiat / FAIR_RATE_INR_PER_USDC)}
                 </div>
               </div>
               <div>
                 <div className="eyebrow mb-1">Earnings 2%</div>
                 <div className="font-mono text-[color:var(--accent-strong)]">
-                  ${(earnings.spread / FAIR_RATE_INR_PER_USDC).toFixed(2)}
+                  {fmtUsd(earnings.spread / FAIR_RATE_INR_PER_USDC)}
                 </div>
               </div>
             </div>
