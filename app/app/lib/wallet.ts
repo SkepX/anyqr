@@ -177,12 +177,27 @@ async function callFreshApi<T>(
  *  reconnect behavior. */
 function makeResilientApi(walletKey: string): Cip30Api {
   return new Proxy({} as Cip30Api, {
-    get(_target, prop: string) {
+    get(_target, prop) {
+      // Never claim to have `then` / `catch` / `finally` — otherwise
+      // `await` treats the handle as a thenable and hangs forever
+      // waiting for it to "resolve". Same for symbols (iterators,
+      // Symbol.toPrimitive) and structural-clone probes.
+      if (
+        typeof prop === "symbol" ||
+        prop === "then" ||
+        prop === "catch" ||
+        prop === "finally" ||
+        prop === "constructor" ||
+        prop === "toJSON"
+      ) {
+        return undefined;
+      }
+      const key = prop as string;
       return (...args: unknown[]) =>
         callFreshApi(walletKey, (api) => {
-          const fn = (api as unknown as Record<string, unknown>)[prop];
+          const fn = (api as unknown as Record<string, unknown>)[key];
           if (typeof fn !== "function")
-            throw new Error(`api.${prop} is not a function`);
+            throw new Error(`api.${key} is not a function`);
           return Promise.resolve(
             (fn as (...a: unknown[]) => unknown).apply(api, args),
           );
