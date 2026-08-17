@@ -251,12 +251,16 @@ function MerchantInner() {
         [order.orderId]: { ...order, status: "Accepted" },
       }));
     }
+    console.log(`[merchant] act:${kind} START orderId=${order.orderId.slice(0, 8)}`);
     try {
-      // Retry once if Lace's channel died between enable() and signing.
       const sign = async (): Promise<string> => {
+        console.log(`[merchant] act:${kind} calling getApi`);
         const api = await getApi();
         if (!api) throw new Error("Wallet unavailable");
+        console.log(`[merchant] act:${kind} got api, building Lucid client`);
+        const t1 = performance.now();
         const client = await buildClient(api);
+        console.log(`[merchant] act:${kind} client built in ${Math.round(performance.now() - t1)}ms`);
         if (kind === "accept") {
           const randomBytes = new Uint8Array(64);
           crypto.getRandomValues(randomBytes);
@@ -264,14 +268,18 @@ function MerchantInner() {
             .map((b) => b.toString(16).padStart(2, "0"))
             .join("");
           const { acceptOrder } = await import("@qrpay/sdk");
+          console.log(`[merchant] act:accept executing tx build+sign+submit`);
+          const t2 = performance.now();
           const r = await acceptOrder(client).execute({
             orderId: order.orderId,
             merchantPublicKey,
           });
+          console.log(`[merchant] act:accept execute done in ${Math.round(performance.now() - t2)}ms`, r.isOk() ? "OK" : "ERR");
           if (r.isErr()) throw new Error(extractErr(r.error));
           return r.value.txHash;
         }
         const { complete } = await import("@qrpay/sdk");
+        console.log(`[merchant] act:complete executing`);
         const r = await complete(client).execute({ orderId: order.orderId });
         if (r.isErr()) throw new Error(extractErr(r.error));
         return r.value.txHash;
@@ -280,6 +288,7 @@ function MerchantInner() {
       try {
         txHash = await sign();
       } catch (e) {
+        console.warn(`[merchant] act:${kind} first attempt failed`, e);
         if (isWalletChannelClosed(e) && conn) {
           console.warn(`[merchant] wallet channel closed, retrying ${kind} with fresh handle`);
           resetEnabledApi(conn.key);
@@ -288,6 +297,7 @@ function MerchantInner() {
           throw e;
         }
       }
+      console.log(`[merchant] act:${kind} SUCCESS txHash=${txHash.slice(0, 10)}…`);
       // Record the hash so home/recent and merchant desk can show it.
       await fetch("/api/orders/record-tx", {
         method: "POST",

@@ -140,30 +140,39 @@ export function isWalletChannelClosed(e: unknown): boolean {
 
 async function callFreshApi<T>(
   walletKey: string,
+  methodName: string,
   fn: (api: Cip30Api) => Promise<T>,
 ): Promise<T> {
   const inj = () => readInjected()[walletKey];
   const enable = () => {
     let p = enabledApis.get(walletKey);
     if (!p) {
+      console.log(`[wallet] enable() for ${walletKey} (method=${methodName})`);
       const injection = inj();
       if (!injection) return Promise.reject(new Error(`${walletKey} not installed`));
       p = injection.enable();
       enabledApis.set(walletKey, p);
-      p.catch(() => enabledApis.delete(walletKey));
+      p.catch((e) => {
+        console.warn(`[wallet] enable() rejected`, e);
+        enabledApis.delete(walletKey);
+      });
     }
     return p;
   };
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
       const api = await enable();
-      return await fn(api);
+      const t0 = performance.now();
+      const result = await fn(api);
+      console.log(`[wallet] ${methodName} ok in ${Math.round(performance.now() - t0)}ms`);
+      return result;
     } catch (e) {
       if (isWalletChannelClosed(e) && attempt === 0) {
-        console.warn(`[wallet] method call hit dead channel, re-enabling ${walletKey}`);
+        console.warn(`[wallet] ${methodName} hit dead channel, re-enabling ${walletKey}`);
         enabledApis.delete(walletKey);
         continue;
       }
+      console.warn(`[wallet] ${methodName} threw`, e);
       throw e;
     }
   }
@@ -194,7 +203,7 @@ function makeResilientApi(walletKey: string): Cip30Api {
       }
       const key = prop as string;
       return (...args: unknown[]) =>
-        callFreshApi(walletKey, (api) => {
+        callFreshApi(walletKey, key, (api) => {
           const fn = (api as unknown as Record<string, unknown>)[key];
           if (typeof fn !== "function")
             throw new Error(`api.${key} is not a function`);
