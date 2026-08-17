@@ -1,17 +1,21 @@
 import "server-only";
-import { put, head } from "@vercel/blob";
+import { put, head, list } from "@vercel/blob";
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 
 /**
  * Off-chain order metadata (paymentAddress, txHashes, buyerConfirmed…),
- * keyed by orderId. Backed by Vercel Blob so writes propagate across
- * lambda instances — the previous file-based approach lived per-lambda
- * and caused paymentAddress to blink to null for merchants whose polls
- * bounced to a "cold" lambda without the meta.
+ * keyed by orderId.
+ *
+ * ONE BLOB PER ORDER. The previous single-JSON-array design did whole-
+ * file read-modify-write from concurrent lambdas, and racing writes to
+ * DIFFERENT orders silently erased each other's fields (an "I've paid"
+ * write clobbered the accept record of the same order written moments
+ * earlier by another lambda). Per-order files make cross-order writes
+ * independent; same-order writes are rare and near-sequential.
  *
  * If BLOB_READ_WRITE_TOKEN isn't set (local dev / preview without a
- * Blob store) we fall back to the in-repo JSON file so nothing breaks.
+ * Blob store) we fall back to an in-repo JSON file so nothing breaks.
  */
 
 export interface OrderMeta {
@@ -37,16 +41,12 @@ export interface OrderMeta {
   merchantPaid?: number;
 }
 
-const BLOB_KEY = "qrpay-registry.json";
+const PREFIX = "qrpay-orders/";
+const LEGACY_KEY = "qrpay-registry.json";
 const FALLBACK_FILE = join(process.cwd(), "..", ".qrpay-registry.json");
 const useBlob = !!process.env.BLOB_READ_WRITE_TOKEN;
 
-// Short-lived in-memory cache to keep merchant polling (every 4s per
-// tab, ~1 read per poll) from hammering the Blob endpoint. Writes
-// invalidate immediately so we always read our own writes.
-const CACHE_TTL_MS = 1500;
-let cachedStore: Map<string, OrderMeta> | null = null;
-let cachedAt = 0;
+/* ---------------- local-file fallback (dev without Blob) ------------- */
 
 function loadFromFile(): Map<string, OrderMeta> {
   if (!existsSync(FALLBACK_FILE)) return new Map();
@@ -65,26 +65,26 @@ function saveToFile(store: Map<string, OrderMeta>) {
   }
 }
 
-async function loadFromBlob(): Promise<Map<string, OrderMeta>> {
+/* ---------------- per-order blob primitives -------------------------- */
+
+// Blob URLs are CDN-cached; a ts param forces a fresh read.
+async function fetchJson(url: string): Promise<unknown | null> {
+  const r = await fetch(`${url}?ts=${Date.now()}`, { cache: "no-store" });
+  if (!r.ok) return null;
+  return r.json();
+}
+
+async function readOrderBlob(orderId: string): Promise<OrderMeta | null> {
   try {
-    const info = await head(BLOB_KEY);
-    // Cache-bust: blob URLs are stable and served via CDN, so a plain
-    // fetch can return minutes-stale registry content on other lambdas.
-    const r = await fetch(`${info.url}?ts=${Date.now()}`, { cache: "no-store" });
-    if (!r.ok) throw new Error(`blob fetch ${r.status}`);
-    const arr = (await r.json()) as OrderMeta[];
-    return new Map(arr.map((m) => [m.orderId, m]));
-  } catch (e) {
-    // First-run: Blob returns 404 for head() when key doesn't exist yet.
-    // Any other failure — return the last-known cache or an empty map.
-    if ((e as { name?: string })?.name !== "BlobNotFoundError")
-      console.warn("[registry] loadFromBlob failed:", e);
-    return cachedStore ?? new Map();
+    const info = await head(`${PREFIX}${orderId}.json`);
+    return ((await fetchJson(info.url)) as OrderMeta) ?? null;
+  } catch {
+    return null; // BlobNotFound and friends
   }
 }
 
-async function saveToBlob(store: Map<string, OrderMeta>) {
-  await put(BLOB_KEY, JSON.stringify([...store.values()]), {
+async function writeOrderBlob(m: OrderMeta): Promise<void> {
+  await put(`${PREFIX}${m.orderId}.json`, JSON.stringify(m), {
     access: "public",
     allowOverwrite: true,
     addRandomSuffix: false,
@@ -93,45 +93,87 @@ async function saveToBlob(store: Map<string, OrderMeta>) {
   });
 }
 
-async function load(): Promise<Map<string, OrderMeta>> {
-  if (!useBlob) return loadFromFile();
-  if (cachedStore && Date.now() - cachedAt < CACHE_TTL_MS) return cachedStore;
-  cachedStore = await loadFromBlob();
-  cachedAt = Date.now();
-  return cachedStore;
+/** One-shot legacy read: entries from the old single-array blob that
+ *  don't have a per-order file yet. Never written back. */
+async function readLegacy(): Promise<Map<string, OrderMeta>> {
+  try {
+    const info = await head(LEGACY_KEY);
+    const arr = (await fetchJson(info.url)) as OrderMeta[] | null;
+    return new Map((arr ?? []).map((m) => [m.orderId, m]));
+  } catch {
+    return new Map();
+  }
 }
 
-async function save(store: Map<string, OrderMeta>) {
-  if (!useBlob) {
-    saveToFile(store);
-    return;
+/* ---------------- read cache (list+fetch fan-out is pricey) ---------- */
+
+const CACHE_TTL_MS = 2000;
+let cachedAll: Map<string, OrderMeta> | null = null;
+let cachedAt = 0;
+
+async function loadAll(): Promise<Map<string, OrderMeta>> {
+  if (cachedAll && Date.now() - cachedAt < CACHE_TTL_MS) return cachedAll;
+  const store = await readLegacy();
+  try {
+    const { blobs } = await list({ prefix: PREFIX });
+    const metas = await Promise.all(
+      blobs.map(async (b) => (await fetchJson(b.url)) as OrderMeta | null),
+    );
+    for (const m of metas) if (m?.orderId) store.set(m.orderId, m); // per-order wins
+  } catch (e) {
+    console.warn("[registry] list failed:", e);
+    if (cachedAll) return cachedAll;
   }
-  await saveToBlob(store);
-  cachedStore = store;
+  cachedAll = store;
   cachedAt = Date.now();
+  return store;
 }
+
+function rememberLocally(m: OrderMeta) {
+  if (cachedAll) cachedAll.set(m.orderId, m);
+}
+
+/* ---------------- public API (unchanged surface) --------------------- */
 
 export const registry = {
   async put(m: OrderMeta) {
-    const store = await load();
-    store.set(m.orderId, m);
-    await save(store);
+    if (!useBlob) {
+      const store = loadFromFile();
+      store.set(m.orderId, m);
+      saveToFile(store);
+      return;
+    }
+    await writeOrderBlob(m);
+    rememberLocally(m);
   },
+
   async get(orderId: string): Promise<OrderMeta | null> {
-    const store = await load();
-    return store.get(orderId) ?? null;
+    if (!useBlob) return loadFromFile().get(orderId) ?? null;
+    const own = await readOrderBlob(orderId);
+    if (own) return own;
+    return (await readLegacy()).get(orderId) ?? null;
   },
+
   async all(): Promise<OrderMeta[]> {
-    const store = await load();
-    return [...store.values()];
+    if (!useBlob) return [...loadFromFile().values()];
+    return [...(await loadAll()).values()];
   },
+
   async patch(orderId: string, patch: Partial<OrderMeta>) {
-    const store = await load();
-    const cur = store.get(orderId);
+    if (!useBlob) {
+      const store = loadFromFile();
+      const cur = store.get(orderId);
+      if (!cur) return null;
+      const next = { ...cur, ...patch };
+      store.set(orderId, next);
+      saveToFile(store);
+      return next;
+    }
+    const cur = await this.get(orderId);
     if (!cur) return null;
     const next = { ...cur, ...patch };
-    store.set(orderId, next);
-    await save(store);
+    await writeOrderBlob(next); // touches ONLY this order's file
+    rememberLocally(next);
     return next;
   },
 };

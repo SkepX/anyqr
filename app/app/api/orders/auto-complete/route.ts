@@ -7,40 +7,66 @@ import { adminCompleteOrder, serverConfig } from "../../../lib/server";
  *  lost. Recover it from the chain: find which recent script-address tx
  *  consumed the markPaid escrow output. Returns null while the spender
  *  is still un-indexed (mempool) — a later poke picks it up. */
-async function findEscrowSpender(orderId: string): Promise<string | null> {
-  const meta = await registry.get(orderId);
-  const paidTx = meta?.buyerConfirmedTxHash;
-  if (!paidTx) return null;
-  const key = process.env.BLOCKFROST_PROJECT_ID;
-  if (!key) return null;
-  const base = "https://cardano-preprod.blockfrost.io/api/v0";
-  const headers = { project_id: key };
-  const scriptAddress = serverConfig().scriptAddress;
-  const pu = await fetch(`${base}/txs/${paidTx}/utxos`, { headers }).then(
-    (r) => (r.ok ? r.json() : null),
+const BF_BASE = "https://cardano-preprod.blockfrost.io/api/v0";
+const bfHeaders = () => ({ project_id: process.env.BLOCKFROST_PROJECT_ID ?? "" });
+const bfJson = (path: string) =>
+  fetch(`${BF_BASE}${path}`, { headers: bfHeaders() }).then((r) =>
+    r.ok ? r.json() : null,
   );
+
+/** Find the tx that consumed `parentTx`'s output at the script address. */
+async function findSpenderOfScriptOutput(parentTx: string): Promise<string | null> {
+  const scriptAddress = serverConfig().scriptAddress;
+  const pu = await bfJson(`/txs/${parentTx}/utxos`);
   if (!pu) return null;
-  const escrowIdx = (
+  const idx = (
     pu.outputs as Array<{ address: string; output_index: number }>
   ).find((o) => o.address === scriptAddress)?.output_index;
-  if (escrowIdx === undefined) return null;
-  const txs = await fetch(
-    `${base}/addresses/${scriptAddress}/transactions?order=desc&count=20`,
-    { headers },
-  ).then((r) => (r.ok ? r.json() : null));
+  if (idx === undefined) return null;
+  const txs = await bfJson(
+    `/addresses/${scriptAddress}/transactions?order=desc&count=20`,
+  );
   if (!txs) return null;
   for (const t of txs as Array<{ tx_hash: string }>) {
-    if (t.tx_hash === paidTx) continue;
-    const u = await fetch(`${base}/txs/${t.tx_hash}/utxos`, { headers }).then(
-      (r) => (r.ok ? r.json() : null),
-    );
+    if (t.tx_hash === parentTx) continue;
+    const u = await bfJson(`/txs/${t.tx_hash}/utxos`);
     if (!u) continue;
     const spends = (
       u.inputs as Array<{ tx_hash: string; output_index: number }>
-    ).some((i) => i.tx_hash === paidTx && i.output_index === escrowIdx);
+    ).some((i) => i.tx_hash === parentTx && i.output_index === idx);
     if (spends) return t.tx_hash;
   }
   return null;
+}
+
+async function findEscrowSpender(orderId: string): Promise<string | null> {
+  const meta = await registry.get(orderId);
+  if (!meta?.buyerConfirmedTxHash) return null;
+  return findSpenderOfScriptOutput(meta.buyerConfirmedTxHash);
+}
+
+/** The accept record (acceptTxHash + merchantAddress) can be lost to a
+ *  clobbered registry write. Both are recoverable from the chain: the
+ *  accept tx is whatever spent the place output, and its non-script
+ *  inputs are the merchant's wallet. adminCompleteOrder independently
+ *  verifies the address against the on-chain datum's merchant pkh. */
+async function recoverMerchantAddress(meta: {
+  placeTxHash?: string;
+  acceptTxHash?: string;
+}): Promise<{ merchantAddress: string; acceptTxHash: string } | null> {
+  const acceptTx =
+    meta.acceptTxHash ??
+    (meta.placeTxHash
+      ? await findSpenderOfScriptOutput(meta.placeTxHash)
+      : null);
+  if (!acceptTx) return null;
+  const u = await bfJson(`/txs/${acceptTx}/utxos`);
+  if (!u) return null;
+  const scriptAddress = serverConfig().scriptAddress;
+  const merchantAddress = (
+    u.inputs as Array<{ address: string; collateral?: boolean }>
+  ).find((i) => i.address !== scriptAddress)?.address;
+  return merchantAddress ? { merchantAddress, acceptTxHash: acceptTx } : null;
 }
 
 export const dynamic = "force-dynamic";
@@ -64,7 +90,19 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "unknown order" }, { status: 404 });
   if (meta.completeTxHash)
     return NextResponse.json({ ok: true, txHash: meta.completeTxHash });
-  if (!meta.merchantAddress)
+  let merchantAddress = meta.merchantAddress ?? null;
+  if (!merchantAddress) {
+    // Accept record lost — recover from the chain and backfill.
+    const rec = await recoverMerchantAddress(meta).catch(() => null);
+    if (rec) {
+      merchantAddress = rec.merchantAddress;
+      await registry.patch(orderId, {
+        merchantAddress: rec.merchantAddress,
+        acceptTxHash: rec.acceptTxHash,
+      });
+    }
+  }
+  if (!merchantAddress)
     return NextResponse.json(
       { error: "no merchantAddress recorded for this order" },
       { status: 409 },
@@ -76,7 +114,7 @@ export async function POST(req: Request) {
 
   await registry.patch(orderId, { completingAt: Date.now() });
   try {
-    const txHash = await adminCompleteOrder(orderId, meta.merchantAddress);
+    const txHash = await adminCompleteOrder(orderId, merchantAddress);
     await registry.patch(orderId, { completeTxHash: txHash });
     return NextResponse.json({ ok: true, txHash });
   } catch (e) {
