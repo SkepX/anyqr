@@ -27,13 +27,59 @@ export async function buildClient(api: Cip30Api) {
   const { createClient } = await import("@qrpay/sdk");
   const key = process.env.NEXT_PUBLIC_BLOCKFROST_PROJECT_ID;
   if (!key) throw new Error("NEXT_PUBLIC_BLOCKFROST_PROJECT_ID unset");
-  const lucid = await Lucid(
-    new Blockfrost("https://cardano-preprod.blockfrost.io/api/v0", key),
-    cfg.network,
+  const bfUrl = "https://cardano-preprod.blockfrost.io/api/v0";
+  const lucid = await Lucid(new Blockfrost(bfUrl, key), cfg.network);
+
+  // Monkey-patch provider.evaluateTx to call Blockfrost's simpler
+  // /utils/txs/evaluate endpoint (raw CBOR body). The default
+  // /utils/txs/evaluate/utxos endpoint returns
+  // {"fault":{"string":"failed to decode payload from base64 or base16"}}
+  // on Preprod for our Accept tx — Ogmios can't parse whatever Lucid
+  // 0.4.34's provider is currently sending. The raw-body endpoint works.
+  const provider = lucid.config().provider as {
+    evaluateTx: (tx: string, extra?: unknown) => Promise<unknown>;
+  };
+  provider.evaluateTx = async (tx: string) => {
+    console.log(`[eval] POST ${bfUrl}/utils/txs/evaluate (raw cbor ${tx.length / 2}B)`);
+    const t0 = performance.now();
+    const res = await fetch(`${bfUrl}/utils/txs/evaluate`, {
+      method: "POST",
+      headers: { "Content-Type": "application/cbor", project_id: key },
+      body: tx,
+    });
+    const body = await res.json();
+    console.log(`[eval] ${res.status} in ${Math.round(performance.now() - t0)}ms`, body);
+    if (!res.ok || body.fault) {
+      throw new Error(
+        `evaluate failed: ${JSON.stringify(body)}. Tx: ${tx.slice(0, 200)}…`,
+      );
+    }
+    if (!body.result?.EvaluationResult) {
+      throw new Error(`unexpected eval response: ${JSON.stringify(body)}`);
+    }
+    // Convert to the format Lucid expects (matches its own parser).
+    return Object.entries(body.result.EvaluationResult).map(
+      ([pointer, data]) => {
+        const [pTag, pIndex] = pointer.split(":");
+        const d = data as { memory: number; steps: number };
+        const tagMap: Record<string, number> = {
+          spend: 0,
+          mint: 1,
+          certificate: 2,
+          withdrawal: 3,
+        };
+        return {
+          redeemer_tag: tagMap[pTag] ?? 0,
+          redeemer_index: Number(pIndex),
+          ex_units: { mem: d.memory, steps: d.steps },
+        };
+      },
+    );
+  };
+
+  lucid.selectWallet.fromAPI(
+    api as unknown as Parameters<typeof lucid.selectWallet.fromAPI>[0],
   );
-  // Cast: we only need the CIP-30 subset we typed; Lucid's WalletApi is
-  // structurally compatible with any real injected wallet.
-  lucid.selectWallet.fromAPI(api as unknown as Parameters<typeof lucid.selectWallet.fromAPI>[0]);
   return createClient({
     lucid,
     validator: cfg.validator,
