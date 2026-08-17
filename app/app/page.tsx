@@ -1,5 +1,4 @@
 import Link from "next/link";
-import { WalletButton } from "./components/WalletButton";
 
 export default function Landing() {
   return (
@@ -9,7 +8,6 @@ export default function Landing() {
           <span className="font-semibold tracking-tight text-lg">anyqr</span>
           <span className="pill">preprod</span>
         </div>
-        <WalletButton />
       </header>
 
       <section className="hero-grid flex-1 flex flex-col items-center justify-center px-6 py-20 relative">
