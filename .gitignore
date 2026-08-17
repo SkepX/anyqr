@@ -1,0 +1,17 @@
+node_modules/
+dist/
+build/
+.env
+.env.*
+!.env.example
+*.seed
+*.sk
+.aiken/
+escrow/build/
+escrow/artifacts/
+.next/
+.qrpay-registry.json
+.wallets/
+.claude/
+proposal.txt
+architecture.txt

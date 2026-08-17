@@ -1,0 +1,10 @@
+{
+  "name": "@qrpay/scripts",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@lucid-evolution/lucid": "^0.4.29",
+    "@qrpay/sdk": "workspace:*"
+  }
+}
