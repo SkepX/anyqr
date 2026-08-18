@@ -19,9 +19,9 @@
 
 ---
 
-Your stablecoin lives on Cardano. The chai stall takes UPI. Those two facts have
-never met, and every attempt to introduce them has gone through an exchange, a
-bank, a KYC queue and three days of waiting.
+Stablecoins on Cardano cannot buy anything in the physical world. Turning them
+into spendable local currency means an exchange, a bank, a KYC queue and days of
+waiting, and at the end of all that you still have to move the money yourself.
 
 anyqr deletes the middle. Scan the shop's QR. Type the amount in rupees, reais,
 rupiah, whatever the country uses. Sign once. A merchant on the other side pays
