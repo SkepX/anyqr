@@ -6,6 +6,26 @@ const stagger = (step: number) => ({ animationDelay: `${step * 80}ms` });
 export default function Landing() {
   return (
     <main className="flex-1 flex flex-col relative">
+      {/* Routing bar — the headline claim, on top of everything. */}
+      <div className="w-full bg-[color:var(--text)] text-[color:var(--bg)] px-6 py-2.5 flex flex-wrap items-center justify-center gap-x-3 gap-y-1 text-xs sm:text-[13px] leading-snug text-center">
+        <span className="inline-flex items-center gap-1.5 font-medium shrink-0">
+          <span
+            className="dot-live"
+            style={{ background: "var(--accent)" }}
+            aria-hidden
+          />
+          Coming soon
+        </span>
+        <span className="opacity-90">
+          Orders route to both the Cardano-native order book and global liquidity
+          via <span className="font-medium">p2p.foundation</span> — whichever
+          settles first.
+        </span>
+        <span className="font-mono opacity-70 whitespace-nowrap">
+          $10M+ settled · 1,350+ merchants
+        </span>
+      </div>
+
       <header className="flex items-center justify-between gap-4 px-6 py-5 border-b border-[color:var(--border)]">
         <div className="flex items-baseline gap-3">
           <span className="font-semibold tracking-tight text-lg">anyqr</span>
@@ -85,18 +105,17 @@ export default function Landing() {
                 Coming soon
               </span>
               <div>
-                <div className="font-medium">
-                  Global liquidity via p2p.foundation
-                </div>
+                <div className="font-medium">Dual-routed liquidity</div>
                 <p className="text-sm text-[color:var(--text-muted)] mt-1 max-w-md">
-                  Orders no local merchant picks up will route to the
-                  p2p.foundation network, so a payment never waits on one desk
-                  being awake.
+                  Every order goes to the Cardano-native order book and the
+                  p2p.foundation network at once — whichever fills first settles
+                  the payment, so you get local speed with global depth behind
+                  it.
                 </p>
               </div>
             </div>
             <span className="text-xs font-mono text-[color:var(--text-faint)] whitespace-nowrap">
-              integration in progress
+              $10M+ settled · 1,350+ merchants
             </span>
           </div>
         </div>
