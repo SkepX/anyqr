@@ -32,11 +32,12 @@ export default function Landing() {
               aria-hidden
             />
             <p className="text-sm leading-relaxed">
-              <span className="font-semibold">Coming soon.</span> Orders route to
-              both the Cardano-native book and global liquidity via{" "}
+              Orders fill on the{" "}
+              <span className="font-semibold">Cardano-native book</span> today.
+              Global liquidity via{" "}
               <span className="font-semibold">p2p.foundation</span>{" "}
-              <span className="opacity-70">($10M+ settled, 1,350+ merchants)</span>
-              , so fills land faster.
+              <span className="opacity-70">($10M+ settled, 1,350+ merchants)</span>{" "}
+              integration is coming soon.
             </p>
           </div>
 
