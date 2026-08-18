@@ -44,6 +44,36 @@ Reputation lives on the merchant identity (planned CIP-0170 DID). Merchants
 who complete honest trades build reputation and route more volume. Merchants
 who steal a trade lose their entire reputation and future routing weight.
 
+## Liquidity routing
+
+Today every order fills on the Cardano native order book in this repo. Merchants
+register here, watch the desk, and take orders one at a time.
+
+On mainnet an order is published to two books at once:
+
+```
+                    +--> Cardano native book   (merchants running this app)
+   order placed ----+
+                    +--> p2p.foundation        (existing global merchant network)
+```
+
+Whichever side accepts first takes the order and the other listing drops. The
+buyer never picks a route and never waits on one merchant being awake, which is
+what gets resolution time down.
+
+The second route is worth wiring in rather than growing a merchant base from
+zero because p2p.foundation is already at scale:
+
+```
+$31.4M     total volume processed since inception
+341,200+   orders settled
+$4.69M     July 2026 volume, up 31 percent month over month
+```
+
+Those are p2p.foundation's numbers, not anyqr's. anyqr brings the Cardano side:
+USDCx and USDM liquidity, the escrow validator in this repo, and buyers holding
+stablecoin on Cardano who currently have no way to spend it at a local QR.
+
 ## Running locally
 
 Requires Node 20+, pnpm 9+, and the Aiken toolchain
@@ -121,7 +151,8 @@ const r = await placeOrder(client).execute({
 ## Status
 
 Prototype on Cardano Preprod. Full lifecycle proven on chain end to end.
-Not on mainnet yet.
+Not on mainnet yet. Dual routing to p2p.foundation ships with the mainnet
+release, alongside the Cardano native book.
 
 ## License
 
