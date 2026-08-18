@@ -19,9 +19,9 @@
 
 ---
 
-Stablecoins on Cardano cannot buy anything in the physical world. Turning them
-into spendable local currency means an exchange, a bank, a KYC queue and days of
-waiting, and at the end of all that you still have to move the money yourself.
+Turning stablecoins into local currency takes an exchange, a bank and a lot of
+waiting. anyqr closes that gap in about 90 seconds, in a completely
+decentralised manner.
 
 anyqr deletes the middle. Scan the shop's QR. Type the amount in rupees, reais,
 rupiah, whatever the country uses. Sign once. A merchant on the other side pays
@@ -31,7 +31,7 @@ your stablecoin plus a 2 percent spread the moment you confirm the cash landed.
 No custodian ever holds your funds. No company can freeze the order. An Aiken
 validator on Cardano holds the escrow from the first signature to the last, and
 the payout fires on its own with no claim button and no support ticket. Three
-signatures, about a minute, ten countries.
+signatures, about 90 seconds, ten countries.
 
 **Fully decentralised. Non custodial. Your keys, your funds.**
 
