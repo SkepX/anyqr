@@ -579,9 +579,14 @@ function MerchantInner() {
       {/* Nav */}
       <header className="border-b border-[color:var(--border)] px-6 py-4 flex items-center justify-between">
         <div className="flex items-center gap-6">
-          <Link href="/" className="font-semibold tracking-tight text-lg">
-            anyqr
-          </Link>
+          <div className="flex items-baseline gap-2">
+            <Link href="/" className="font-semibold tracking-tight text-lg">
+              anyqr
+            </Link>
+            <span className="text-xs text-[color:var(--text-muted)] whitespace-nowrap">
+              By SyncAI.network
+            </span>
+          </div>
           <nav className="hidden sm:flex items-center gap-1 text-sm">
             <span className="px-3 py-1.5 bg-[color:var(--surface-alt)] rounded">
               Merchant

@@ -22,7 +22,7 @@ const instrumentSerif = Instrument_Serif({
 });
 
 export const metadata: Metadata = {
-  title: "anyqr: spend stablecoins at any local QR",
+  title: "anyqr by SyncAI.network: spend stablecoins at any local QR",
   description:
     "On/off ramp for USDC on Cardano. Pay any local QR with stablecoin, without banks in the middle.",
 };

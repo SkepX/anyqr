@@ -6,6 +6,7 @@ export default function Landing() {
       <header className="flex items-center justify-between px-6 py-5 border-b border-[color:var(--border)]">
         <div className="flex items-center gap-3">
           <span className="font-semibold tracking-tight text-lg">anyqr</span>
+          <span className="text-xs text-[color:var(--text-muted)]">By SyncAI.network</span>
           <span className="pill">preprod</span>
         </div>
       </header>
