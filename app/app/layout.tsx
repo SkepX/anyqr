@@ -21,9 +21,8 @@ const instrumentSerif = Instrument_Serif({
   subsets: ["latin"],
 });
 
-const TITLE = "anyqr by SyncAI.network: spend stablecoins at any local QR";
-const DESCRIPTION =
-  "On/off ramp for USDC on Cardano. Pay any local QR with stablecoin, without banks in the middle.";
+const TITLE = "anyqr by SyncAI";
+const DESCRIPTION = "Spend USDCx/USDM at local QR codes in 10 countries";
 
 /** Social cards, icons and alt text come from the files sitting next to this
  *  one — opengraph-image.jpg, twitter-image.jpg, icon.png, apple-icon.png,
