@@ -1,11 +1,43 @@
-# anyqr
+<p align="center">
+  <img src="app/app/opengraph-image.jpg" width="760"
+       alt="anyqr.cash, spend cardano stablecoins at local QR codes across 10 countries">
+</p>
 
-Spend stablecoins at any local QR code. A non custodial peer to peer stablecoin
-off ramp on Cardano. Buyers scan any UPI, PIX or QRIS code and pay from their
-tUSDM. Merchants front the local cash from their bank and claim tUSDM plus a 2
-percent spread once the buyer confirms receipt.
+<h1 align="center">anyqr</h1>
 
-Fully decentralised. Non custodial. Your keys, your funds.
+<p align="center">
+  <b>Spend stablecoins at any local QR code.</b><br>
+  <a href="https://anyqr.cash">anyqr.cash</a> · by SyncAI.network
+</p>
+
+<p align="center">
+  <img alt="Cardano Preprod" src="https://img.shields.io/badge/Cardano-Preprod%20live-c6ff00?style=flat-square&labelColor=0a0a0a">
+  <img alt="Aiken" src="https://img.shields.io/badge/Aiken-v1.1.23-0a0a0a?style=flat-square">
+  <img alt="Plutus V3" src="https://img.shields.io/badge/Plutus-V3-0a0a0a?style=flat-square">
+  <img alt="License MIT" src="https://img.shields.io/badge/license-MIT-0a0a0a?style=flat-square">
+</p>
+
+---
+
+Your stablecoin lives on Cardano. The chai stall takes UPI. Those two facts have
+never met, and every attempt to introduce them has gone through an exchange, a
+bank, a KYC queue and three days of waiting.
+
+anyqr deletes the middle. Scan the shop's QR. Type the amount in rupees, reais,
+rupiah, whatever the country uses. Sign once. A merchant on the other side pays
+that shop from their own bank account in seconds, and the contract hands them
+your stablecoin plus a 2 percent spread the moment you confirm the cash landed.
+
+No custodian ever holds your funds. No company can freeze the order. An Aiken
+validator on Cardano holds the escrow from the first signature to the last, and
+the payout fires on its own with no claim button and no support ticket. Three
+signatures, about a minute, ten countries.
+
+**Fully decentralised. Non custodial. Your keys, your funds.**
+
+On mainnet it gets faster still: every order fans out to both the Cardano native
+book and p2p.foundation's global merchant network, $31.4M settled across
+341,200+ orders, so it fills wherever a merchant answers first.
 
 ## What is in this repo
 
