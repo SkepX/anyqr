@@ -23,21 +23,19 @@ export default function Landing() {
         <div className="max-w-3xl w-full">
           {/* Routing notice — sits directly above the headline. */}
           <div
-            className="card-flat mb-6 flex items-start gap-3 fade-up"
+            className="callout mb-6 flex items-start gap-3 fade-up"
             style={stagger(0)}
           >
             <span
-              className="dot-live mt-1.5 shrink-0"
-              style={{ background: "var(--accent)" }}
+              className="dot-live mt-[7px] shrink-0"
+              style={{ background: "var(--text)" }}
               aria-hidden
             />
             <p className="text-sm leading-relaxed">
-              <span className="font-medium">Coming soon.</span> Orders route to
+              <span className="font-semibold">Coming soon.</span> Orders route to
               both the Cardano-native book and global liquidity via{" "}
-              <span className="font-medium">p2p.foundation</span>{" "}
-              <span className="text-[color:var(--text-muted)]">
-                ($10M+ settled, 1,350+ merchants)
-              </span>
+              <span className="font-semibold">p2p.foundation</span>{" "}
+              <span className="opacity-70">($10M+ settled, 1,350+ merchants)</span>
               , so fills land faster.
             </p>
           </div>

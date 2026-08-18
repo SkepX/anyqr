@@ -295,3 +295,12 @@ input[type="number"] {
   .fade-up { animation: none; }
   .dot-live { animation: none; }
 }
+
+/* Callout — a highlighted notice. Accent-soft fill + hard border so it
+   reads as important without competing with the full-accent CTA card. */
+.callout {
+  background: var(--accent-soft);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px 16px;
+}
