@@ -299,8 +299,9 @@ input[type="number"] {
 /* Callout — a highlighted notice. Accent-soft fill + hard border so it
    reads as important without competing with the full-accent CTA card. */
 .callout {
-  background: var(--accent-soft);
-  border: 1px solid var(--border);
+  background: var(--surface);
+  border: 1px solid var(--border-soft);
+  border-left: 3px solid var(--accent);
   border-radius: 8px;
-  padding: 12px 16px;
+  padding: 10px 14px;
 }

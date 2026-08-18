@@ -22,22 +22,16 @@ export default function Landing() {
       <section className="hero-grid flex-1 min-h-0 flex flex-col items-center justify-center px-6 py-8 lg:py-10">
         <div className="max-w-3xl w-full">
           {/* Routing notice — sits directly above the headline. */}
-          <div
-            className="callout mb-6 flex items-start gap-3 fade-up"
-            style={stagger(0)}
-          >
-            <span
-              className="dot-live mt-[7px] shrink-0"
-              style={{ background: "var(--text)" }}
-              aria-hidden
-            />
-            <p className="text-sm leading-relaxed">
-              Orders fill on the{" "}
-              <span className="font-semibold">Cardano-native book</span> today.
+          <div className="callout mb-7 fade-up" style={stagger(0)}>
+            <p className="text-sm leading-relaxed text-[color:var(--text-muted)]">
+              <span className="text-[color:var(--text)]">
+                Orders fill on the Cardano-native book today.
+              </span>{" "}
               Global liquidity via{" "}
-              <span className="font-semibold">p2p.foundation</span>{" "}
-              <span className="opacity-70">($10M+ settled, 1,350+ merchants)</span>{" "}
-              integration is coming soon.
+              <span className="text-[color:var(--text)] font-medium">
+                p2p.foundation
+              </span>{" "}
+              ($10M+ settled, 1,350+ merchants) coming soon.
             </p>
           </div>
 
@@ -55,9 +49,8 @@ export default function Landing() {
             className="text-[color:var(--text-muted)] text-base sm:text-lg leading-relaxed max-w-xl mb-8 fade-up"
             style={stagger(2)}
           >
-            A single Aiken contract escrows your tUSDM while a peer-to-peer
-            merchant network pays the shop in local cash. Non-custodial,
-            on-chain, settled in about a minute.
+            An Aiken contract escrows your tUSDM while local merchants pay the
+            shop in cash. Non-custodial, on-chain, about a minute end to end.
           </p>
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
@@ -66,7 +59,7 @@ export default function Landing() {
                 href="/start"
                 badge="For anyone with a wallet"
                 title="I want to pay"
-                body="Scan any UPI, PIX or QRIS code and pay from your tUSDM. A merchant sends the local cash on your behalf."
+                body="Scan any UPI, PIX or QRIS code and pay from your tUSDM."
                 cta="Start paying"
                 primary
               />
@@ -76,19 +69,32 @@ export default function Landing() {
                 href="/merchant"
                 badge="For local liquidity providers"
                 title="I want to earn"
-                body="Accept orders, pay the shop from your bank, and claim tUSDM plus a 2% spread on every trade."
+                body="Pay the shop from your bank, claim tUSDM plus a 2% spread."
                 cta="Open merchant desk"
               />
             </div>
           </div>
 
           <div
-            className="strip grid-cols-1 sm:grid-cols-3 fade-up"
+            className="mt-6 flex flex-wrap items-center gap-x-5 gap-y-1 text-sm text-[color:var(--text-muted)] fade-up"
             style={stagger(5)}
           >
-            <Stat label="Settlement" value="~60 sec" />
-            <Stat label="Merchant spread" value="2%" />
-            <Stat label="Custody" value="Yours" />
+            <span>
+              <span className="text-[color:var(--text)] font-medium">~60 sec</span>{" "}
+              settlement
+            </span>
+            <span aria-hidden className="text-[color:var(--text-faint)]">·</span>
+            <span>
+              <span className="text-[color:var(--text)] font-medium">2%</span>{" "}
+              merchant spread
+            </span>
+            <span aria-hidden className="text-[color:var(--text-faint)]">·</span>
+            <span>
+              <span className="text-[color:var(--text)] font-medium">
+                Non-custodial
+              </span>{" "}
+              throughout
+            </span>
           </div>
         </div>
       </section>
@@ -103,15 +109,6 @@ export default function Landing() {
         <span>Preprod testnet · By SyncAI.network</span>
       </footer>
     </main>
-  );
-}
-
-function Stat({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="px-5 py-3">
-      <div className="eyebrow mb-0.5">{label}</div>
-      <div className="display text-xl leading-tight">{value}</div>
-    </div>
   );
 }
 
