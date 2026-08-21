@@ -1,5 +1,5 @@
 "use client";
-import type { TxSignBuilder } from "@lucid-evolution/lucid";
+import type { LucidEvolution, TxSignBuilder } from "@lucid-evolution/lucid";
 import type { Cip30Api } from "./wallet";
 
 /** In-memory cache of the config fetched from /api/config. */
@@ -175,6 +175,51 @@ function extendTxLock(fn: () => Promise<unknown>): void {
   );
 }
 
+/** Wait for a tx to reach a block.
+ *
+ *  A block lands every ~20s, but a congested mempool can hold a tx far
+ *  longer, and a flat ceiling turns "slow" into "failed": the queue frees
+ *  up while the tx is still in flight, and the next build is made against
+ *  a UTxO set that doesn't yet show the spend. So poll for as long as a
+ *  congested chain plausibly needs, logging at widening checkpoints so a
+ *  stuck tx is visible rather than silent, and report back whether it
+ *  actually confirmed instead of assuming it did.
+ *
+ *  One poller runs for the whole wait — abandoning pollers on each backoff
+ *  step would leave them hammering the provider with nobody listening. */
+async function awaitConfirmed(
+  lucid: LucidEvolution,
+  hash: string,
+  ceilingMs = 420_000,
+): Promise<boolean> {
+  const short = hash.slice(0, 10);
+  const started = Date.now();
+  const confirmed = lucid
+    .awaitTx(hash, 5_000)
+    .then(() => true)
+    .catch(() => false);
+
+  // Widening checkpoints: quiet while it's normal, louder the longer it
+  // drags, so congestion shows up in the log before a user reports it.
+  let next = 20_000;
+  while (Date.now() - started < ceilingMs) {
+    const slice = Math.min(next, ceilingMs - (Date.now() - started));
+    const done = await Promise.race([
+      confirmed,
+      new Promise<false>((r) => setTimeout(() => r(false), slice)),
+    ]);
+    if (done) return true;
+    const waited = Math.round((Date.now() - started) / 1000);
+    console.warn(`[await] ${short} still unconfirmed after ${waited}s`);
+    next = Math.min(next * 2, 60_000);
+  }
+  console.warn(
+    `[await] ${short} gave up after ${Math.round(ceilingMs / 1000)}s — ` +
+      "chain may still include it; next build refreshes from Blockfrost",
+  );
+  return false;
+}
+
 /** Ledger rejections meaning the tx was built against a UTxO view that
  *  a just-submitted tx has already invalidated (spent inputs, cascading
  *  collateral/value complaints). A fresh rebuild after ~1 block fixes
@@ -296,12 +341,7 @@ export async function signAndSubmitPrepared(
   // so the next build sees its inputs spent and its change available.
   // Capped so an outage can't wedge the queue forever.
   const holdQueueUntilConfirmed = (hash: string) =>
-    extendTxLock(() =>
-      Promise.race([
-        lucid.awaitTx(hash, 10_000),
-        new Promise((r) => setTimeout(r, 120_000)),
-      ]),
-    );
+    extendTxLock(() => awaitConfirmed(lucid, hash));
   // "Node doesn't know these inputs" in either dialect. Individual
   // Blockfrost submit nodes have been observed MINUTES behind their own
   // query API (session-sticky LB), so a rejection from one door says
@@ -320,10 +360,7 @@ export async function signAndSubmitPrepared(
     if (!/already been included|All inputs are spent/i.test(msg)) return null;
     const hash = signed.toHash();
     console.log("[submit] node says already included — verifying", hash.slice(0, 10));
-    const found = await Promise.race([
-      lucid.awaitTx(hash, 10_000),
-      new Promise<boolean>((r) => setTimeout(() => r(false), 90_000)),
-    ]);
+    const found = await awaitConfirmed(lucid, hash, 180_000);
     if (found) {
       console.log("[submit] confirmed: our tx is on-chain");
       return hash;
