@@ -78,13 +78,21 @@ lose their entire reputation and future routing weight.
 
 ## Identity, CIP-0170
 
+A basic CIP-0170 DID implementation, live on Preprod for merchants and
+buyers.
+
 An identity is anchored as a CIP-0170 attestation: an `ATTEST` envelope at
 metadata label 170, carrying authority, beside an anyqr record at label 1170,
 carrying meaning. The split lets an indexer verify the first without
 understanding the second. The transaction is signed and paid by the
 identity's own wallet, so nobody anchors on anyone else's behalf.
 
-Live on Preprod, written and then read back off the chain:
+A merchant's record holds the corridors they can settle, the ECIES pubkey
+buyers encrypt the shop QR to, and the hashes of any Reclaim zkTLS claims
+they have proved. A buyer's record is thinner: they are risking their own
+money and need to prove far less.
+
+Written and then read back off the chain:
 
 ```
 buyer     094ca474bb54d1e27bdbe3ac5c298e3d05baef755411b9a728f365670b8d1963
@@ -93,20 +101,13 @@ merchant  abd56962988bb8031d7c42dc4df58fd5f4e3e5a3835888a6e9835b7e3ad2536b
 
 `scripts/identity-anchor.mjs` reproduces both and asserts the round trip: 19
 checks covering the envelope shape, the signer's key hash, the merchant's
-corridors, and the Reclaim claim hashes.
+corridors, and the Reclaim claim hashes. `sdk/src/identity/schema.ts` carries
+the full shape, including reputation scoring.
 
-What this is not, stated plainly. It is not KERI. A real Autonomic
-Identifier has a key event log behind it, established by an `AUTH_BEGIN`
-credential chain and rotatable without losing continuity of control. Here the
-identifier is derived from the wallet's key hash and prefixed `X`, which is
-not a valid CESR derivation code, so a verifier that knows KERI rejects it
-rather than silently trusting it. The parser marks every such record
-`provisional`. Real AIDs, Reclaim proof verification, the indexer and
-reputation scoring are all still to build; `sdk/src/identity/schema.ts` is
-the shape they will take.
-
-Label 1170 is provisional too. It has to be claimed in the CIP-10 registry
-before mainnet or it may collide with another project's payloads.
+Next on this: KERI-issued AIDs in place of the wallet-derived identifier,
+Reclaim proof verification, the indexer, and reputation feeding merchant
+order limits. Label 1170 also needs claiming in the CIP-10 registry before
+mainnet.
 
 ## Liquidity routing
 
