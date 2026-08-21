@@ -53,6 +53,38 @@ function adminPkh(): string {
 }
 
 /**
+ * Seed for the *relayer* wallet — the one that pays fees and collateral to
+ * push `Complete` through after a dispute window closes.
+ *
+ * This is deliberately NOT the admin key. The validator's Complete branch
+ * checks no signature at all (see escrow.ak), so the relayer holds zero
+ * authority over an escrow: it cannot redirect funds, cannot resolve a
+ * dispute, and cannot spend an order early. It only supplies ada for fees.
+ * A compromised relayer costs us its float and nothing else.
+ *
+ * The admin key — the only one the validator ever checks, and only on
+ * `Resolve` — is never loaded by this process. It stays offline; the server
+ * knows the admin's public key hash and nothing more.
+ *
+ * ADMIN_SEED remains a fallback purely so existing deployments keep working
+ * while RELAYER_SEED is provisioned. It is a misconfiguration, not a mode.
+ */
+function relayerSeed(): string {
+  const relayer = process.env.RELAYER_SEED?.trim();
+  if (relayer) return relayer;
+  const admin = process.env.ADMIN_SEED?.trim();
+  if (admin) {
+    console.warn(
+      "[qrpay] RELAYER_SEED is unset and ADMIN_SEED is being used to pay " +
+        "release fees. The arbitration key should not be online — provision " +
+        "RELAYER_SEED with a small ada float and remove ADMIN_SEED.",
+    );
+    return admin;
+  }
+  throw new Error("missing env: RELAYER_SEED");
+}
+
+/**
  * Read only qrpay client. No wallet is selected — used for querying escrow
  * UTXOs and reading rates. All state-changing actions happen client-side
  * via CIP-30 signing.
@@ -85,21 +117,21 @@ export function serverConfig() {
 }
 
 /**
- * Server-side escrow release: after the dispute window, spend the Paid
- * escrow UTxO and pay the USDC to the merchant's address, signed by the
- * admin hot wallet (fees + collateral come from it). The validator's
- * Complete branch requires no merchant signature — only that the funds
- * land at the merchant's payment key after the deadline — which is what
- * makes the release fully automatic (no wallet popup).
+ * Relayed escrow release: after the dispute window, spend the Paid escrow
+ * UTxO and pay the USDC to the merchant's address. The validator's Complete
+ * branch requires no signature at all — only that the funds land at the
+ * merchant's payment key after the deadline — which is what makes the
+ * release automatic (no wallet popup) and what lets a keyless-authority
+ * relayer submit it. The relayer supplies fees and collateral, nothing else;
+ * any wallet could push the same transaction and the outcome is identical.
  */
-export async function adminCompleteOrder(
+export async function relayCompleteOrder(
   orderId: string,
   merchantAddress: string,
 ): Promise<string> {
-  const seed = assertEnv("ADMIN_SEED");
   const client = await readOnly();
   const lucid = client.cfg.lucid;
-  lucid.selectWallet.fromSeed(seed);
+  lucid.selectWallet.fromSeed(relayerSeed());
 
   const r = await client.findOrderById(orderId);
   if (r.isErr()) throw new Error(`order not found on-chain: ${orderId}`);

@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { registry } from "../../../lib/registry";
-import { adminCompleteOrder, serverConfig } from "../../../lib/server";
+import { relayCompleteOrder, serverConfig } from "../../../lib/server";
 
 /** When a duplicate release attempt is told "inputs already spent", the
  *  escrow WAS released — by some other attempt whose hash we may have
@@ -48,7 +48,7 @@ async function findEscrowSpender(orderId: string): Promise<string | null> {
 /** The accept record (acceptTxHash + merchantAddress) can be lost to a
  *  clobbered registry write. Both are recoverable from the chain: the
  *  accept tx is whatever spent the place output, and its non-script
- *  inputs are the merchant's wallet. adminCompleteOrder independently
+ *  inputs are the merchant's wallet. relayCompleteOrder independently
  *  verifies the address against the on-chain datum's merchant pkh. */
 async function recoverMerchantAddress(meta: {
   placeTxHash?: string;
@@ -116,7 +116,7 @@ export async function POST(req: Request) {
 
   await registry.patch(orderId, { completingAt: Date.now() });
   try {
-    const txHash = await adminCompleteOrder(orderId, merchantAddress);
+    const txHash = await relayCompleteOrder(orderId, merchantAddress);
     await registry.patch(orderId, { completeTxHash: txHash });
     return NextResponse.json({ ok: true, txHash });
   } catch (e) {

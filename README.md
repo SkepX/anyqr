@@ -124,7 +124,22 @@ TUSDC_POLICY_ID=<your test stablecoin policy>
 TUSDC_ASSET_NAME=<hex asset name>
 NEXT_PUBLIC_TUSDC_POLICY_ID=<same as above>
 NEXT_PUBLIC_TUSDC_ASSET_NAME=<same as above>
+ADMIN_ADDRESS=addr_test1...        # public address only, never the seed
+RELAYER_SEED=<24 words>            # small ada float, holds no authority
 ```
+
+Two wallets, deliberately split.
+
+The **admin** is the only key the validator ever checks, and only on
+`Resolve`, where it can pay the buyer or the merchant and nowhere else. Its
+seed never reaches the server. Only `ADMIN_ADDRESS` is configured, and the
+app derives the public key hash from it.
+
+The **relayer** pushes `Complete` through once a dispute window closes. That
+branch checks no signature at all, so the relayer has no authority over an
+escrow: it cannot redirect funds, resolve a dispute, or spend an order early.
+It pays fees and collateral. Fund it with a few ada and nothing more; if it
+leaks, the loss is its float.
 
 Then
 
