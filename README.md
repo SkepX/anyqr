@@ -72,9 +72,41 @@ their bank app. Buyer confirms receipt, which starts a short dispute window.
 After the window closes without dispute, the escrow releases the tUSDM to the
 merchant automatically.
 
-Reputation lives on the merchant identity (planned CIP-0170 DID). Merchants
-who complete honest trades build reputation and route more volume. Merchants
-who steal a trade lose their entire reputation and future routing weight.
+Reputation lives on the merchant identity. Merchants who complete honest
+trades build reputation and route more volume. Merchants who steal a trade
+lose their entire reputation and future routing weight.
+
+## Identity, CIP-0170
+
+An identity is anchored as a CIP-0170 attestation: an `ATTEST` envelope at
+metadata label 170, carrying authority, beside an anyqr record at label 1170,
+carrying meaning. The split lets an indexer verify the first without
+understanding the second. The transaction is signed and paid by the
+identity's own wallet, so nobody anchors on anyone else's behalf.
+
+Live on Preprod, written and then read back off the chain:
+
+```
+buyer     094ca474bb54d1e27bdbe3ac5c298e3d05baef755411b9a728f365670b8d1963
+merchant  abd56962988bb8031d7c42dc4df58fd5f4e3e5a3835888a6e9835b7e3ad2536b
+```
+
+`scripts/identity-anchor.mjs` reproduces both and asserts the round trip: 19
+checks covering the envelope shape, the signer's key hash, the merchant's
+corridors, and the Reclaim claim hashes.
+
+What this is not, stated plainly. It is not KERI. A real Autonomic
+Identifier has a key event log behind it, established by an `AUTH_BEGIN`
+credential chain and rotatable without losing continuity of control. Here the
+identifier is derived from the wallet's key hash and prefixed `X`, which is
+not a valid CESR derivation code, so a verifier that knows KERI rejects it
+rather than silently trusting it. The parser marks every such record
+`provisional`. Real AIDs, Reclaim proof verification, the indexer and
+reputation scoring are all still to build; `sdk/src/identity/schema.ts` is
+the shape they will take.
+
+Label 1170 is provisional too. It has to be claimed in the CIP-10 registry
+before mainnet or it may collide with another project's payloads.
 
 ## Liquidity routing
 
