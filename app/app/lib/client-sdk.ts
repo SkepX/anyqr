@@ -187,17 +187,23 @@ function extendTxLock(fn: () => Promise<unknown>): void {
  *
  *  One poller runs for the whole wait — abandoning pollers on each backoff
  *  step would leave them hammering the provider with nobody listening. */
-async function awaitConfirmed(
+export async function awaitConfirmed(
   lucid: LucidEvolution,
   hash: string,
   ceilingMs = 420_000,
 ): Promise<boolean> {
   const short = hash.slice(0, 10);
   const started = Date.now();
+  // A poller that *errored* must not be mistaken for one still working, or
+  // a dead provider would pin the queue for the whole ceiling.
+  let pollerFailed = false;
   const confirmed = lucid
     .awaitTx(hash, 5_000)
     .then(() => true)
-    .catch(() => false);
+    .catch(() => {
+      pollerFailed = true;
+      return false;
+    });
 
   // Widening checkpoints: quiet while it's normal, louder the longer it
   // drags, so congestion shows up in the log before a user reports it.
@@ -209,6 +215,10 @@ async function awaitConfirmed(
       new Promise<false>((r) => setTimeout(() => r(false), slice)),
     ]);
     if (done) return true;
+    if (pollerFailed) {
+      console.warn(`[await] ${short} poller errored — releasing the queue`);
+      return false;
+    }
     const waited = Math.round((Date.now() - started) / 1000);
     console.warn(`[await] ${short} still unconfirmed after ${waited}s`);
     next = Math.min(next * 2, 60_000);

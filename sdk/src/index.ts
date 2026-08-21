@@ -15,6 +15,11 @@ export { refund } from "./actions/refund.js";
 export { raiseDispute } from "./actions/raiseDispute.js";
 export { resolveDispute } from "./actions/resolveDispute.js";
 
+// Identity — CIP-0170 attestations (schema + a minimal anchor/read path)
+export { anchorIdentity, identityMetadata, parseIdentityMetadata, provisionalAid, isProvisionalAid } from "./identity/anchor.js";
+export type { AnchorIdentityParams, AnchoredIdentity } from "./identity/anchor.js";
+export * from "./identity/schema.js";
+
 export type { PlaceOrderParams } from "./actions/placeOrder.js";
 export type { AcceptOrderParams } from "./actions/acceptOrder.js";
 export type { SetPaymentAddrParams } from "./actions/setPaymentAddr.js";
